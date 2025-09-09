@@ -1,11 +1,28 @@
 const express = require('express');
 const { query, body, validationResult } = require('express-validator');
+const multer = require('multer');
 const Theatre = require('../models/Theatre');
 const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
 const { optionalAuth } = require('../middleware/auth');
 const UploadService = require('../services/uploadService');
 
 const router = express.Router();
+
+// Multer configuration for handling theatre owner application document uploads
+const applicationUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB per file
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`File type ${file.mimetype} is not allowed. Allowed types: ${allowedTypes.join(', ')}`));
+    }
+  }
+});
 
 // Get all theatres with filtering
 router.get('/', [
@@ -263,6 +280,10 @@ router.post(
     body('internetConnectivity').trim().notEmpty().withMessage('Internet connectivity is required'),
     body('termsAccepted').isBoolean().withMessage('Terms must be accepted')
   ],
+  applicationUpload.fields([
+    { name: 'businessLicense', maxCount: 10 },
+    { name: 'nocPermission', maxCount: 10 }
+  ]),
   async (req, res) => {
     try {
       const errors = validationResult(req);
@@ -286,12 +307,61 @@ router.post(
         seatingCapacity,
         screens = [],
         internetConnectivity,
-        businessLicense = [],
-        nocPermission = [],
+        // Files will be processed from req.files instead of body arrays
         seatingLayout = [],
         ticketPricing = [],
         termsAccepted
       } = req.body;
+
+      // Helper to process and upload a list of files
+      const processFiles = async (files = [], category = 'other') => {
+        const uploaded = [];
+        for (const file of files) {
+          // Validate file
+          const validation = UploadService.validateFile(file);
+          if (!validation.isValid) {
+            // Skip invalid files but continue processing others
+            continue;
+          }
+
+          const fileName = file.originalname;
+          const fileBuffer = file.buffer;
+          const isImage = file.mimetype.startsWith('image/');
+
+          let result;
+          if (isImage) {
+            result = await UploadService.uploadImage(fileBuffer, fileName, 'booknview/theatre-applications');
+          } else if (file.mimetype === 'application/pdf') {
+            result = await UploadService.uploadPDF(fileBuffer, fileName, 'booknview/theatre-applications');
+          } else {
+            result = await UploadService.uploadFile(fileBuffer, fileName, 'booknview/theatre-applications', 'auto');
+          }
+
+          uploaded.push({
+            fileName: fileName,
+            fileUrl: result.url,
+            fileType: file.mimetype,
+            fileSize: file.size,
+            publicId: result.publicId,
+            category
+          });
+        }
+        return uploaded;
+      };
+
+      // Extract files from multipart form-data
+      const businessLicenseFiles = (req.files && req.files['businessLicense']) || [];
+      const nocPermissionFiles = (req.files && req.files['nocPermission']) || [];
+
+      // Upload to Cloudinary and collect metadata
+      const [businessLicense, nocPermission] = await Promise.all([
+        processFiles(businessLicenseFiles, 'license'),
+        processFiles(nocPermissionFiles, 'permit')
+      ]);
+
+      // Convert to URL arrays per selected schema design
+      const businessLicenseUrls = businessLicense.map(doc => doc.fileUrl);
+      const nocPermissionUrls = nocPermission.map(doc => doc.fileUrl);
 
       const application = new TheatreOwnerApplication({
         ownerName: name,
@@ -307,10 +377,10 @@ router.post(
         internetConnectivity,
         termsAccepted,
         documents: {
-          businessLicense,
-          nocPermission,
-          seatingLayout,
-          ticketPricing
+          businessLicenseUrls,
+          nocPermissionUrls,
+          seatingLayoutUrls: seatingLayout,
+          ticketPricingUrls: ticketPricing
         }
       });
 

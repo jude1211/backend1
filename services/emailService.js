@@ -292,7 +292,7 @@ class EmailService {
 
             <div class="credentials-box">
               <h3>🔐 Your Login Credentials</h3>
-              <p>Use these credentials to access your Theatre Owner Dashboard:</p>
+              <p>Use these credentials to access your Theatre Owner Dashboard through the general BookNView login page:</p>
 
               <div class="credential-item">
                 <strong>Username:</strong> ${credentials.username}
@@ -303,7 +303,7 @@ class EmailService {
               </div>
 
               <div class="credential-item">
-                <strong>Login URL:</strong> <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/theatre-owner/login">Theatre Owner Login</a>
+                <strong>Login URL:</strong> <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}">BookNView General Login</a>
               </div>
             </div>
 
@@ -321,8 +321,8 @@ class EmailService {
               <li>Begin accepting bookings from customers</li>
             </ul>
 
-            <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/theatre-owner/login" class="button">
-              Access Your Dashboard
+            <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}" class="button">
+              Login to BookNView
             </a>
 
             <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>

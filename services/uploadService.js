@@ -21,7 +21,7 @@ class UploadService {
           {
             folder: folder,
             resource_type: resourceType,
-            allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
+            allowed_formats: ['jpg', 'jpeg', 'png', 'svg', 'pdf'],
             transformation: resourceType === 'image' ? [
               { quality: 'auto:good' },
               { fetch_format: 'auto' }
@@ -71,7 +71,7 @@ class UploadService {
           {
             folder: folder,
             resource_type: 'image',
-            allowed_formats: ['jpg', 'jpeg', 'png'],
+            allowed_formats: ['jpg', 'jpeg', 'png', 'svg'],
             transformation: [
               { quality: 'auto:good' },
               { fetch_format: 'auto' },

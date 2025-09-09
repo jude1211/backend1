@@ -15,6 +15,7 @@ const bookingRoutes = require('./routes/bookings');
 const theatreRoutes = require('./routes/theatres');
 const theatreOwnerAuthRoutes = require('./routes/theatreOwnerAuth');
 const uploadRoutes = require('./routes/upload');
+const offlineBookingRoutes = require('./routes/offlineBookings');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -98,6 +99,7 @@ app.use(`/api/${apiVersion}/bookings`, bookingRoutes);
 app.use(`/api/${apiVersion}/theatres`, theatreRoutes);
 app.use(`/api/${apiVersion}/theatre-owner`, theatreOwnerAuthRoutes);
 app.use(`/api/${apiVersion}/upload`, uploadRoutes);
+app.use(`/api/${apiVersion}/offline-bookings`, offlineBookingRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -125,7 +127,7 @@ const connectDB = async () => {
   try {
     const mongoURI = process.env.NODE_ENV === 'test' 
       ? process.env.MONGODB_TEST_URI 
-      : process.env.MONGODB_URI;
+      : (process.env.MONGODB_URI || process.env.MONGO_URI);
     
     await mongoose.connect(mongoURI);
     

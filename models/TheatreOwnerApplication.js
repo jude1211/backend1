@@ -24,10 +24,10 @@ const theatreOwnerApplicationSchema = new mongoose.Schema(
     internetConnectivity: { type: String, required: true },
 
     documents: {
-      businessLicense: [{ fileName: String, fileType: String, fileSize: Number, url: String }],
-      nocPermission: [{ fileName: String, fileType: String, fileSize: Number, url: String }],
-      seatingLayout: [{ fileName: String, fileType: String, fileSize: Number, url: String }],
-      ticketPricing: [{ fileName: String, fileType: String, fileSize: Number, url: String }]
+      businessLicenseUrls: [String],
+      nocPermissionUrls: [String],
+      seatingLayoutUrls: [String],
+      ticketPricingUrls: [String]
     },
 
     termsAccepted: { type: Boolean, required: true },

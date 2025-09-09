@@ -7,7 +7,7 @@ const router = express.Router();
 
 // Theatre Owner Login
 router.post('/login', [
-  body('username').trim().notEmpty().withMessage('Username is required'),
+  body('username').trim().notEmpty().withMessage('Username or email is required'),
   body('password').notEmpty().withMessage('Password is required')
 ], async (req, res) => {
   try {
@@ -22,6 +22,12 @@ router.post('/login', [
     }
 
     const { username, password } = req.body;
+    
+    console.log('🎭 Theatre Owner Login attempt:', { 
+      username, 
+      isEmailFormat: username.includes('@booknview.com'),
+      timestamp: new Date().toISOString()
+    });
 
     // Find theatre owner by credentials
     const theatreOwner = await TheatreOwner.findByCredentials(username, password);

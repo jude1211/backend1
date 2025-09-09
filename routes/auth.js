@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const TheatreOwner = require('../models/TheatreOwner');
 const OTP = require('../models/OTP');
 const { verifyFirebaseToken, getUserByUid } = require('../config/firebase');
 const { authenticateUser, optionalAuth } = require('../middleware/auth');
@@ -249,7 +250,8 @@ router.post('/signup', [
 
 // Manual login with email and password
 router.post('/login', [
-  body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+  // Accept either email or username in the 'email' field from the frontend
+  body('email').trim().notEmpty().withMessage('Email or username is required'),
   body('password').notEmpty().withMessage('Password is required')
 ], async (req, res) => {
   try {
@@ -263,9 +265,61 @@ router.post('/login', [
     }
 
     const { email, password } = req.body;
+    const identifier = (email || '').toString().trim();
+
+    // If identifier looks like a username (no @), try theatre owner login first
+    if (identifier && !identifier.includes('@')) {
+      try {
+        const owner = await TheatreOwner.findByCredentials(identifier, password);
+        if (owner) {
+          const ownerToken = jwt.sign(
+            {
+              userId: owner._id,
+              username: owner.username,
+              email: owner.email,
+              role: 'theatre_owner',
+              theatreName: owner.theatreName
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: process.env.JWT_EXPIRE || '7d' }
+          );
+
+          const ownerData = owner.toObject();
+          delete ownerData.password;
+
+          return res.status(200).json({
+            success: true,
+            message: 'Theatre owner login successful',
+            data: {
+              user: {
+                id: owner._id,
+                email: owner.email,
+                displayName: owner.theatreName,
+                firstName: owner.ownerName,
+                lastName: '',
+                isEmailVerified: owner.isEmailVerified,
+                preferredCity: '',
+                preferences: owner.preferences || {},
+                membershipTier: 'theatre_owner',
+                loyaltyPoints: 0,
+                lastLoginAt: owner.lastLoginAt,
+                createdAt: owner.createdAt,
+                role: 'theatre_owner'
+              },
+              token: ownerToken,
+              authMethod: 'manual',
+              theatreOwnerLogin: true,
+              redirectTo: '/theatre-owner'
+            }
+          });
+        }
+      } catch (e) {
+        // fall through to other checks
+      }
+    }
 
     // Check for admin credentials first
-    if (email.toLowerCase() === 'admin@gmail.com' && password === 'admin123') {
+    if (identifier.toLowerCase() === 'admin@gmail.com' && password === 'admin123') {
       console.log('🔑 Admin login detected');
 
       // Generate a special admin token
@@ -342,6 +396,56 @@ router.post('/login', [
     } catch (authError) {
       // Handle specific authentication errors
       if (authError.message === 'User not found') {
+        // If not a normal user, try authenticating as a theatre owner using same identifier
+        try {
+          const owner = await TheatreOwner.findByCredentials(email, password);
+          if (owner) {
+            const ownerToken = jwt.sign(
+              {
+                userId: owner._id,
+                username: owner.username,
+                email: owner.email,
+                role: 'theatre_owner',
+                theatreName: owner.theatreName
+              },
+              process.env.JWT_SECRET,
+              { expiresIn: process.env.JWT_EXPIRE || '7d' }
+            );
+
+            const ownerData = owner.toObject();
+            delete ownerData.password;
+
+            return res.status(200).json({
+              success: true,
+              message: 'Theatre owner login successful',
+              data: {
+                token: ownerToken,
+                user: {
+                  id: owner._id,
+                  email: owner.email,
+                  displayName: owner.theatreName,
+                  firstName: owner.ownerName,
+                  lastName: '',
+                  isEmailVerified: owner.isEmailVerified,
+                  preferredCity: '',
+                  preferences: owner.preferences || {},
+                  membershipTier: 'theatre_owner',
+                  loyaltyPoints: 0,
+                  lastLoginAt: owner.lastLoginAt,
+                  createdAt: owner.createdAt,
+                  role: 'theatre_owner'
+                },
+                authMethod: 'manual',
+                theatreOwnerLogin: true,
+                redirectTo: '/theatre-owner'
+              }
+            });
+          }
+        } catch (_) {
+          // ignore and fall through to generic message
+        }
+
+        // If no theatre owner match, return the usual error
         return res.status(401).json({
           success: false,
           error: 'Invalid credentials',

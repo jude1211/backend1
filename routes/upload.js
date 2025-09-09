@@ -1,7 +1,8 @@
 const express = require('express');
 const multer = require('multer');
 const { body, validationResult } = require('express-validator');
-const { authenticateUser } = require('../middleware/auth');
+const { authenticateUser, optionalAuth } = require('../middleware/auth');
+const UploadModel = require('../models/Upload');
 const UploadService = require('../services/uploadService');
 
 const router = express.Router();
@@ -14,7 +15,7 @@ const upload = multer({
   },
   fileFilter: (req, file, cb) => {
     // Check file type
-    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'];
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/svg+xml', 'application/pdf'];
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
@@ -74,19 +75,25 @@ router.post('/single', [
       uploadResult = await UploadService.uploadFile(fileBuffer, fileName, folder, type);
     }
 
+    // Persist to MongoDB
+    const saved = await UploadModel.create({
+      url: uploadResult.url,
+      publicId: uploadResult.publicId,
+      fileName,
+      fileType: req.file.mimetype,
+      fileSize: req.file.size,
+      format: uploadResult.format,
+      width: uploadResult.width,
+      height: uploadResult.height,
+      folder,
+      uploadedBy: req.user?._id,
+      metadata: {}
+    });
+
     res.json({
       success: true,
       message: 'File uploaded successfully',
-      data: {
-        url: uploadResult.url,
-        publicId: uploadResult.publicId,
-        fileName: fileName,
-        fileType: req.file.mimetype,
-        fileSize: req.file.size,
-        format: uploadResult.format,
-        width: uploadResult.width,
-        height: uploadResult.height
-      }
+      data: saved
     });
 
   } catch (error) {
@@ -95,6 +102,57 @@ router.post('/single', [
       success: false,
       error: error.message || 'Failed to upload file'
     });
+  }
+});
+
+// Public single upload (for testing/non-auth use)
+router.post('/public/single', [
+  optionalAuth,
+  upload.single('file'),
+  body('folder').optional().isString().trim(),
+  body('type').optional().isIn(['image', 'pdf', 'auto'])
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Validation failed', details: errors.array() });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No file uploaded' });
+    }
+
+    const { folder = 'booknview', type = 'auto' } = req.body;
+    const fileName = req.file.originalname;
+    const fileBuffer = req.file.buffer;
+
+    let uploadResult;
+    if (type === 'image' || req.file.mimetype.startsWith('image/')) {
+      uploadResult = await UploadService.uploadImage(fileBuffer, fileName, folder);
+    } else if (type === 'pdf' || req.file.mimetype === 'application/pdf') {
+      uploadResult = await UploadService.uploadPDF(fileBuffer, fileName, folder);
+    } else {
+      uploadResult = await UploadService.uploadFile(fileBuffer, fileName, folder, type);
+    }
+
+    const saved = await UploadModel.create({
+      url: uploadResult.url,
+      publicId: uploadResult.publicId,
+      fileName,
+      fileType: req.file.mimetype,
+      fileSize: req.file.size,
+      format: uploadResult.format,
+      width: uploadResult.width,
+      height: uploadResult.height,
+      folder,
+      uploadedBy: req.user?._id,
+      metadata: { public: true }
+    });
+
+    res.json({ success: true, message: 'File uploaded successfully', data: saved });
+  } catch (error) {
+    console.error('Public file upload error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to upload file' });
   }
 });
 
@@ -155,18 +213,25 @@ router.post('/multiple', [
           uploadResult = await UploadService.uploadFile(fileBuffer, fileName, folder, type);
         }
 
+        // Save each successful upload to MongoDB
+        const saved = await UploadModel.create({
+          url: uploadResult.url,
+          publicId: uploadResult.publicId,
+          fileName,
+          fileType: file.mimetype,
+          fileSize: file.size,
+          format: uploadResult.format,
+          width: uploadResult.width,
+          height: uploadResult.height,
+          folder,
+          uploadedBy: req.user?._id,
+          metadata: {}
+        });
+
         uploadResults.push({
           fileName: fileName,
           success: true,
-          data: {
-            url: uploadResult.url,
-            publicId: uploadResult.publicId,
-            fileType: file.mimetype,
-            fileSize: file.size,
-            format: uploadResult.format,
-            width: uploadResult.width,
-            height: uploadResult.height
-          }
+          data: saved
         });
 
       } catch (error) {
@@ -198,6 +263,75 @@ router.post('/multiple', [
       success: false,
       error: error.message || 'Failed to upload files'
     });
+  }
+});
+
+// Public multiple upload (for testing/non-auth use)
+router.post('/public/multiple', [
+  optionalAuth,
+  upload.array('files', 10),
+  body('folder').optional().isString().trim(),
+  body('type').optional().isIn(['image', 'pdf', 'auto'])
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Validation failed', details: errors.array() });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ success: false, error: 'No files uploaded' });
+    }
+
+    const { folder = 'booknview', type = 'auto' } = req.body;
+    const uploadResults = [];
+
+    for (const file of req.files) {
+      try {
+        const validation = UploadService.validateFile(file);
+        if (!validation.isValid) {
+          uploadResults.push({ fileName: file.originalname, success: false, error: validation.errors.join(', ') });
+          continue;
+        }
+
+        const fileName = file.originalname;
+        const fileBuffer = file.buffer;
+
+        let uploadResult;
+        if (type === 'image' || file.mimetype.startsWith('image/')) {
+          uploadResult = await UploadService.uploadImage(fileBuffer, fileName, folder);
+        } else if (type === 'pdf' || file.mimetype === 'application/pdf') {
+          uploadResult = await UploadService.uploadPDF(fileBuffer, fileName, folder);
+        } else {
+          uploadResult = await UploadService.uploadFile(fileBuffer, fileName, folder, type);
+        }
+
+        const saved = await UploadModel.create({
+          url: uploadResult.url,
+          publicId: uploadResult.publicId,
+          fileName,
+          fileType: file.mimetype,
+          fileSize: file.size,
+          format: uploadResult.format,
+          width: uploadResult.width,
+          height: uploadResult.height,
+          folder,
+          uploadedBy: req.user?._id,
+          metadata: { public: true }
+        });
+
+        uploadResults.push({ fileName, success: true, data: saved });
+      } catch (error) {
+        uploadResults.push({ fileName: file.originalname, success: false, error: error.message });
+      }
+    }
+
+    const successfulUploads = uploadResults.filter(r => r.success);
+    const failedUploads = uploadResults.filter(r => !r.success);
+    res.json({ success: true, message: `Uploaded ${successfulUploads.length} files successfully`, data: { totalFiles: req.files.length, successfulUploads: successfulUploads.length, failedUploads: failedUploads.length, results: uploadResults } });
+  } catch (error) {
+    console.error('Public multiple file upload error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to upload files' });
   }
 });
 

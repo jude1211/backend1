@@ -147,6 +147,7 @@ const theatreOwnerSchema = new mongoose.Schema({
   }
 }, {
   timestamps: true,
+  collection: 'theatreowners',
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });

@@ -58,8 +58,8 @@ class AccountService {
    * @param {string} ownerName - Name of the owner (fallback)
    * @returns {Promise<string>} Generated username
    */
-  async generateUsername(theatreName, ownerName) {
-    // Clean and format the theatre name
+  async generateUsername(theatreName, ownerName, email) {
+    // Generate username in format: theatrename@booknview.com
     let baseUsername = theatreName
       .toLowerCase()
       .replace(/[^a-z0-9]/g, '') // Remove special characters
@@ -78,17 +78,17 @@ class AccountService {
       baseUsername = 'theatre' + baseUsername;
     }
     
-    let username = baseUsername;
+    let username = `${baseUsername}@booknview.com`;
     let counter = 1;
     
     // Check if username exists and increment counter if needed
     while (await TheatreOwner.findOne({ username })) {
-      username = `${baseUsername}${counter}`;
+      username = `${baseUsername}${counter}@booknview.com`;
       counter++;
       
       // Prevent infinite loop
       if (counter > 999) {
-        username = `${baseUsername}${Date.now()}`;
+        username = `${baseUsername}${Date.now()}@booknview.com`;
         break;
       }
     }
@@ -118,8 +118,15 @@ class AccountService {
       }
 
       // Generate credentials
-      const username = await this.generateUsername(application.theatreName, application.ownerName);
+      const username = await this.generateUsername(application.theatreName, application.ownerName, application.email);
       const password = this.generatePassword(12);
+      
+      console.log('🔐 Generated credentials for theatre owner:', {
+        username,
+        passwordLength: password.length,
+        theatreName: application.theatreName,
+        email: application.email
+      });
       
       // Parse location if it's a string
       let locationData = {};
@@ -166,7 +173,7 @@ class AccountService {
         // Handle rare race-condition duplicate username/email
         if (saveError && saveError.code === 11000) {
           console.warn('⚠️ Duplicate key on save, regenerating username and retrying...', saveError.keyValue);
-          const retryUsername = await this.generateUsername(application.theatreName + Date.now(), application.ownerName);
+          const retryUsername = await this.generateUsername(application.theatreName + Date.now(), application.ownerName, application.email);
           theatreOwner.username = retryUsername;
           savedAccount = await theatreOwner.save();
         } else {
@@ -174,11 +181,15 @@ class AccountService {
         }
       }
       
-      console.log('✅ Theatre owner account created:', {
+      console.log('✅ Theatre owner account created and stored in MongoDB Atlas:', {
         id: savedAccount._id,
         username: savedAccount.username,
         email: savedAccount.email,
-        theatreName: savedAccount.theatreName
+        theatreName: savedAccount.theatreName,
+        passwordGenerated: true,
+        credentialsStored: true,
+        collection: 'theatreowners',
+        database: savedAccount.constructor.db.name
       });
       
       return {
