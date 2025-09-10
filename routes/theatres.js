@@ -265,8 +265,26 @@ router.get('/owner-applications/check-email/:email', async (req, res) => {
 });
 
 // Create theatre owner application (store to MongoDB)
+// Important: multer MUST run BEFORE validators for multipart/form-data
 router.post(
   '/owner-applications',
+  applicationUpload.fields([
+    { name: 'businessLicense', maxCount: 10 },
+    { name: 'nocPermission', maxCount: 10 },
+    { name: 'seatingLayout', maxCount: 20 },
+    { name: 'ticketPricing', maxCount: 20 }
+  ]),
+  // Parse JSON-like fields BEFORE validation
+  (req, _res, next) => {
+    try {
+      if (typeof req.body.screens === 'string') {
+        req.body.screens = JSON.parse(req.body.screens);
+      }
+    } catch (e) {
+      console.warn('⚠️  Failed to parse screens JSON before validation:', e?.message);
+    }
+    next();
+  },
   [
     body('name').trim().notEmpty().withMessage('Owner name is required'),
     body('email').isEmail().withMessage('Valid email is required'),
@@ -275,23 +293,47 @@ router.post(
     body('theatreType').trim().notEmpty().withMessage('Theatre type is required'),
     body('location').trim().notEmpty().withMessage('Location is required'),
     body('description').trim().notEmpty().withMessage('Description is required'),
-    body('screenCount').notEmpty().withMessage('Screen count is required'),
-    body('seatingCapacity').notEmpty().withMessage('Seating capacity is required'),
+    body('screenCount').toInt().isInt({ min: 1 }).withMessage('Screen count must be at least 1'),
+    body('seatingCapacity').toInt().isInt({ min: 1 }).withMessage('Seating capacity must be a positive number'),
     body('internetConnectivity').trim().notEmpty().withMessage('Internet connectivity is required'),
-    body('termsAccepted').isBoolean().withMessage('Terms must be accepted')
+    body('termsAccepted')
+      .customSanitizer(v => (v === true || v === 'true' ? true : false))
+      .isBoolean().withMessage('Terms must be accepted')
   ],
-  applicationUpload.fields([
-    { name: 'businessLicense', maxCount: 10 },
-    { name: 'nocPermission', maxCount: 10 }
-  ]),
   async (req, res) => {
     try {
+      // Log Cloudinary config state for debugging
+      try {
+        const cfgOk = UploadService.isConfigured && UploadService.isConfigured();
+        console.log('🔧 Cloudinary configured:', cfgOk);
+      } catch {}
+
+      // Pre-parse JSON fields sent as strings in multipart
+      try {
+        if (typeof req.body.screens === 'string') {
+          req.body.screens = JSON.parse(req.body.screens);
+        }
+      } catch (parseErr) {
+        console.warn('⚠️  Failed to parse screens JSON:', parseErr?.message);
+      }
+
+      // Debug: log inbound body keys and samples
+      try {
+        const sample = { ...req.body };
+        if (typeof sample.screens === 'string' && sample.screens.length > 200) sample.screens = sample.screens.substring(0, 200) + '…';
+        console.log('🧪 Incoming owner application body keys:', Object.keys(req.body));
+        console.log('🧪 Incoming owner application body sample:', sample);
+      } catch {}
+
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
+        const details = errors.array().map(e => ({ field: e.path, msg: e.msg, value: e.value }));
+        try { console.table(details); } catch {}
         return res.status(400).json({
           success: false,
           error: 'Validation failed',
-          details: errors.array()
+          message: 'One or more fields are invalid or missing',
+          details
         });
       }
 
@@ -307,9 +349,7 @@ router.post(
         seatingCapacity,
         screens = [],
         internetConnectivity,
-        // Files will be processed from req.files instead of body arrays
-        seatingLayout = [],
-        ticketPricing = [],
+        // Files are handled via req.files
         termsAccepted
       } = req.body;
 
@@ -317,13 +357,10 @@ router.post(
       const processFiles = async (files = [], category = 'other') => {
         const uploaded = [];
         for (const file of files) {
-          // Validate file
           const validation = UploadService.validateFile(file);
           if (!validation.isValid) {
-            // Skip invalid files but continue processing others
             continue;
           }
-
           const fileName = file.originalname;
           const fileBuffer = file.buffer;
           const isImage = file.mimetype.startsWith('image/');
@@ -352,16 +389,36 @@ router.post(
       // Extract files from multipart form-data
       const businessLicenseFiles = (req.files && req.files['businessLicense']) || [];
       const nocPermissionFiles = (req.files && req.files['nocPermission']) || [];
+      const seatingLayoutFiles = (req.files && req.files['seatingLayout']) || [];
+      const ticketPricingFiles = (req.files && req.files['ticketPricing']) || [];
 
       // Upload to Cloudinary and collect metadata
-      const [businessLicense, nocPermission] = await Promise.all([
+      const [businessLicense, nocPermission, seatingLayoutUp, ticketPricingUp] = await Promise.all([
         processFiles(businessLicenseFiles, 'license'),
-        processFiles(nocPermissionFiles, 'permit')
+        processFiles(nocPermissionFiles, 'permit'),
+        processFiles(seatingLayoutFiles, 'seatingLayout'),
+        processFiles(ticketPricingFiles, 'ticketPricing')
       ]);
 
-      // Convert to URL arrays per selected schema design
+      // Convert to URL arrays per selected schema design (from freshly uploaded files)
       const businessLicenseUrls = businessLicense.map(doc => doc.fileUrl);
       const nocPermissionUrls = nocPermission.map(doc => doc.fileUrl);
+      const seatingLayoutUrls = seatingLayoutUp.map(doc => doc.fileUrl);
+      const ticketPricingUrls = ticketPricingUp.map(doc => doc.fileUrl);
+
+      // Also accept pre-uploaded URL arrays sent by the frontend (optional)
+      try {
+        const fromBodyBL = req.body.businessLicenseUrls ? JSON.parse(req.body.businessLicenseUrls) : [];
+        const fromBodyNOC = req.body.nocPermissionUrls ? JSON.parse(req.body.nocPermissionUrls) : [];
+        const fromBodySL = req.body.seatingLayoutUrls ? JSON.parse(req.body.seatingLayoutUrls) : [];
+        const fromBodyTP = req.body.ticketPricingUrls ? JSON.parse(req.body.ticketPricingUrls) : [];
+        if (Array.isArray(fromBodyBL)) businessLicenseUrls.push(...fromBodyBL.filter(Boolean));
+        if (Array.isArray(fromBodyNOC)) nocPermissionUrls.push(...fromBodyNOC.filter(Boolean));
+        if (Array.isArray(fromBodySL)) seatingLayoutUrls.push(...fromBodySL.filter(Boolean));
+        if (Array.isArray(fromBodyTP)) ticketPricingUrls.push(...fromBodyTP.filter(Boolean));
+      } catch (mergeErr) {
+        console.warn('⚠️  Failed parsing pre-uploaded URL arrays:', mergeErr?.message);
+      }
 
       const application = new TheatreOwnerApplication({
         ownerName: name,
@@ -379,8 +436,8 @@ router.post(
         documents: {
           businessLicenseUrls,
           nocPermissionUrls,
-          seatingLayoutUrls: seatingLayout,
-          ticketPricingUrls: ticketPricing
+          seatingLayoutUrls,
+          ticketPricingUrls
         }
       });
 
@@ -395,7 +452,9 @@ router.post(
       console.error('Create theatre owner application error:', error);
       return res.status(500).json({
         success: false,
-        error: 'Failed to create application'
+        error: 'Failed to create application',
+        message: error?.message,
+        stack: process.env.NODE_ENV === 'development' ? error?.stack : undefined
       });
     }
   }

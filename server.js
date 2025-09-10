@@ -14,7 +14,6 @@ const movieRoutes = require('./routes/movies');
 const bookingRoutes = require('./routes/bookings');
 const theatreRoutes = require('./routes/theatres');
 const theatreOwnerAuthRoutes = require('./routes/theatreOwnerAuth');
-const uploadRoutes = require('./routes/upload');
 const offlineBookingRoutes = require('./routes/offlineBookings');
 
 // Import middleware
@@ -98,7 +97,6 @@ app.use(`/api/${apiVersion}/movies`, movieRoutes);
 app.use(`/api/${apiVersion}/bookings`, bookingRoutes);
 app.use(`/api/${apiVersion}/theatres`, theatreRoutes);
 app.use(`/api/${apiVersion}/theatre-owner`, theatreOwnerAuthRoutes);
-app.use(`/api/${apiVersion}/upload`, uploadRoutes);
 app.use(`/api/${apiVersion}/offline-bookings`, offlineBookingRoutes);
 
 // Root endpoint

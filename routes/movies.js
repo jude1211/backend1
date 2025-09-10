@@ -1,6 +1,7 @@
 const express = require('express');
-const { query } = require('express-validator');
-const { optionalAuth } = require('../middleware/auth');
+const { query, body } = require('express-validator');
+const { optionalAuth, authenticateUser } = require('../middleware/auth');
+const Movie = require('../models/Movie');
 
 const router = express.Router();
 
@@ -411,64 +412,33 @@ router.get('/:movieId/recommendations', optionalAuth, async (req, res) => {
 
 // Add new movie (for theatre owners)
 router.post('/', [
-  // Add validation middleware here if needed
+  authenticateUser,
+  body('title').trim().notEmpty(),
+  body('genre').trim().notEmpty(),
+  body('duration').trim().notEmpty(),
+  body('status').optional().isIn(['active', 'inactive', 'coming_soon']),
+  body('format').optional().isIn(['2D', '3D'])
 ], async (req, res) => {
   try {
-    const {
-      title,
-      genre,
-      duration,
-      rating,
-      posterUrl,
-      status = 'active',
-      price,
-      showtimes,
-      description,
-      director,
-      cast,
-      language = 'English',
-      releaseDate
-    } = req.body;
-
-    // Validate required fields
-    if (!title || !genre || !duration || !price || !showtimes) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: title, genre, duration, price, showtimes'
-      });
-    }
-
-    // Create new movie object
-    const newMovie = {
-      id: (mockMovies.length + 1).toString(),
-      title,
-      poster: posterUrl || 'https://picsum.photos/seed/' + title.toLowerCase().replace(/\s+/g, '') + '/400/600',
-      backdrop: 'https://picsum.photos/seed/' + title.toLowerCase().replace(/\s+/g, '') + '/1280/720',
-      genre: Array.isArray(genre) ? genre : genre.split(',').map(g => g.trim()),
-      duration: parseInt(duration),
-      rating: rating || 'PG-13',
-      language,
-      releaseDate: releaseDate || new Date().toISOString().split('T')[0],
-      description: description || '',
-      director: director || '',
-      cast: Array.isArray(cast) ? cast : (cast ? cast.split(',').map(c => c.trim()) : []),
-      imdbRating: 0,
-      userRating: 0,
-      status: status === 'active' ? 'now_playing' : status === 'coming_soon' ? 'coming_soon' : 'ended',
-      trailerUrl: '',
-      // Theatre-specific fields
-      price: parseFloat(price),
-      showtimes: Array.isArray(showtimes) ? showtimes : showtimes.split(',').map(s => s.trim())
+    const moviePayload = {
+      title: req.body.title,
+      genre: req.body.genre,
+      duration: req.body.duration,
+      posterUrl: req.body.posterUrl,
+      status: req.body.status || 'active',
+      showtimes: Array.isArray(req.body.showtimes) ? req.body.showtimes : (req.body.showtimes || '').split(',').map(s => s.trim()),
+      description: req.body.description || '',
+      director: req.body.director || '',
+      cast: Array.isArray(req.body.cast) ? req.body.cast : (req.body.cast ? req.body.cast.split(',').map(c => c.trim()) : []),
+      language: req.body.language || 'English',
+      releaseDate: req.body.releaseDate || '',
+      format: req.body.format || '2D',
+      createdBy: req.user._id
     };
 
-    // Add to mock data (in real app, save to database)
-    mockMovies.push(newMovie);
+    const saved = await Movie.create(moviePayload);
 
-    res.status(201).json({
-      success: true,
-      data: newMovie,
-      message: 'Movie added successfully'
-    });
+    res.status(201).json({ success: true, data: saved });
   } catch (error) {
     console.error('Add movie error:', error);
     res.status(500).json({
@@ -479,31 +449,36 @@ router.post('/', [
 });
 
 // Update movie (for theatre owners)
-router.put('/:movieId', async (req, res) => {
+router.put('/:movieId', authenticateUser, async (req, res) => {
   try {
     const movieId = req.params.movieId;
-    const movieIndex = mockMovies.findIndex(m => m.id === movieId);
-
-    if (movieIndex === -1) {
-      return res.status(404).json({
-        success: false,
-        error: 'Movie not found'
-      });
+    const movie = await Movie.findById(movieId);
+    if (!movie) {
+      return res.status(404).json({ success: false, error: 'Movie not found' });
     }
 
-    const updatedMovie = {
-      ...mockMovies[movieIndex],
-      ...req.body,
-      id: movieId // Ensure ID doesn't change
-    };
+    // Only owner or admin can edit
+    if (movie.createdBy.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Not authorized to update this movie' });
+    }
 
-    mockMovies[movieIndex] = updatedMovie;
-
-    res.json({
-      success: true,
-      data: updatedMovie,
-      message: 'Movie updated successfully'
+    Object.assign(movie, {
+      title: req.body.title ?? movie.title,
+      genre: req.body.genre ?? movie.genre,
+      duration: req.body.duration ?? movie.duration,
+      posterUrl: req.body.posterUrl ?? movie.posterUrl,
+      status: req.body.status ?? movie.status,
+      showtimes: req.body.showtimes ? (Array.isArray(req.body.showtimes) ? req.body.showtimes : req.body.showtimes.split(',').map(s => s.trim())) : movie.showtimes,
+      description: req.body.description ?? movie.description,
+      director: req.body.director ?? movie.director,
+      cast: req.body.cast ? (Array.isArray(req.body.cast) ? req.body.cast : req.body.cast.split(',').map(c => c.trim())) : movie.cast,
+      language: req.body.language ?? movie.language,
+      releaseDate: req.body.releaseDate ?? movie.releaseDate,
+      format: req.body.format ?? movie.format
     });
+
+    const saved = await movie.save();
+    res.json({ success: true, data: saved });
   } catch (error) {
     console.error('Update movie error:', error);
     res.status(500).json({
@@ -514,24 +489,18 @@ router.put('/:movieId', async (req, res) => {
 });
 
 // Delete movie (for theatre owners)
-router.delete('/:movieId', async (req, res) => {
+router.delete('/:movieId', authenticateUser, async (req, res) => {
   try {
     const movieId = req.params.movieId;
-    const movieIndex = mockMovies.findIndex(m => m.id === movieId);
+    const movie = await Movie.findById(movieId);
+    if (!movie) return res.status(404).json({ success: false, error: 'Movie not found' });
 
-    if (movieIndex === -1) {
-      return res.status(404).json({
-        success: false,
-        error: 'Movie not found'
-      });
+    if (movie.createdBy.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Not authorized to delete this movie' });
     }
 
-    mockMovies.splice(movieIndex, 1);
-
-    res.json({
-      success: true,
-      message: 'Movie deleted successfully'
-    });
+    await movie.deleteOne();
+    res.json({ success: true, message: 'Movie deleted successfully' });
   } catch (error) {
     console.error('Delete movie error:', error);
     res.status(500).json({
