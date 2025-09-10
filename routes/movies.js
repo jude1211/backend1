@@ -409,4 +409,136 @@ router.get('/:movieId/recommendations', optionalAuth, async (req, res) => {
   }
 });
 
+// Add new movie (for theatre owners)
+router.post('/', [
+  // Add validation middleware here if needed
+], async (req, res) => {
+  try {
+    const {
+      title,
+      genre,
+      duration,
+      rating,
+      posterUrl,
+      status = 'active',
+      price,
+      showtimes,
+      description,
+      director,
+      cast,
+      language = 'English',
+      releaseDate
+    } = req.body;
+
+    // Validate required fields
+    if (!title || !genre || !duration || !price || !showtimes) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: title, genre, duration, price, showtimes'
+      });
+    }
+
+    // Create new movie object
+    const newMovie = {
+      id: (mockMovies.length + 1).toString(),
+      title,
+      poster: posterUrl || 'https://picsum.photos/seed/' + title.toLowerCase().replace(/\s+/g, '') + '/400/600',
+      backdrop: 'https://picsum.photos/seed/' + title.toLowerCase().replace(/\s+/g, '') + '/1280/720',
+      genre: Array.isArray(genre) ? genre : genre.split(',').map(g => g.trim()),
+      duration: parseInt(duration),
+      rating: rating || 'PG-13',
+      language,
+      releaseDate: releaseDate || new Date().toISOString().split('T')[0],
+      description: description || '',
+      director: director || '',
+      cast: Array.isArray(cast) ? cast : (cast ? cast.split(',').map(c => c.trim()) : []),
+      imdbRating: 0,
+      userRating: 0,
+      status: status === 'active' ? 'now_playing' : status === 'coming_soon' ? 'coming_soon' : 'ended',
+      trailerUrl: '',
+      // Theatre-specific fields
+      price: parseFloat(price),
+      showtimes: Array.isArray(showtimes) ? showtimes : showtimes.split(',').map(s => s.trim())
+    };
+
+    // Add to mock data (in real app, save to database)
+    mockMovies.push(newMovie);
+
+    res.status(201).json({
+      success: true,
+      data: newMovie,
+      message: 'Movie added successfully'
+    });
+  } catch (error) {
+    console.error('Add movie error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to add movie'
+    });
+  }
+});
+
+// Update movie (for theatre owners)
+router.put('/:movieId', async (req, res) => {
+  try {
+    const movieId = req.params.movieId;
+    const movieIndex = mockMovies.findIndex(m => m.id === movieId);
+
+    if (movieIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: 'Movie not found'
+      });
+    }
+
+    const updatedMovie = {
+      ...mockMovies[movieIndex],
+      ...req.body,
+      id: movieId // Ensure ID doesn't change
+    };
+
+    mockMovies[movieIndex] = updatedMovie;
+
+    res.json({
+      success: true,
+      data: updatedMovie,
+      message: 'Movie updated successfully'
+    });
+  } catch (error) {
+    console.error('Update movie error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update movie'
+    });
+  }
+});
+
+// Delete movie (for theatre owners)
+router.delete('/:movieId', async (req, res) => {
+  try {
+    const movieId = req.params.movieId;
+    const movieIndex = mockMovies.findIndex(m => m.id === movieId);
+
+    if (movieIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: 'Movie not found'
+      });
+    }
+
+    mockMovies.splice(movieIndex, 1);
+
+    res.json({
+      success: true,
+      message: 'Movie deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete movie error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete movie'
+    });
+  }
+});
+
 module.exports = router;
