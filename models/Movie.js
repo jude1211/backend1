@@ -12,13 +12,20 @@ const MovieSchema = new mongoose.Schema(
     description: { type: String, default: '' },
     director: { type: String, default: '' },
     cast: { type: [String], default: [] },
-    language: { type: String, default: 'English' },
+    // Store actual spoken language separate from MongoDB text-index override
+    movieLanguage: { type: String, default: 'English' },
+    // Keep a generic 'language' field for compatibility but default to english to avoid Mongo text index override issues
+    language: { type: String, default: 'english' },
     releaseDate: { type: String, default: '' },
 
     // Ownership/relations
     theatreOwner: { type: mongoose.Schema.Types.ObjectId, ref: 'TheatreOwner', index: true },
     theatre: { type: mongoose.Schema.Types.ObjectId, ref: 'Theatre' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    
+    // Additional fields for better management
+    isActive: { type: Boolean, default: true },
+    addedBy: { type: String, enum: ['theatre_owner', 'admin'], default: 'theatre_owner' },
 
     // Ratings from customers would be stored elsewhere; keep aggregate here if needed
     aggregateRating: { type: Number, default: 0 },

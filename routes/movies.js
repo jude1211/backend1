@@ -1,6 +1,7 @@
 const express = require('express');
 const { query, body } = require('express-validator');
 const { optionalAuth, authenticateUser } = require('../middleware/auth');
+const { authenticateTheatreOwner } = require('../middleware/theatreOwnerAuth');
 const Movie = require('../models/Movie');
 
 const router = express.Router();
@@ -100,14 +101,15 @@ const mockMovies = [
 ];
 
 // Get all movies with filtering and pagination
+// Get all movies (public endpoint with filters)
 router.get('/', [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 50 }),
   query('genre').optional().trim(),
   query('language').optional().trim(),
-  query('status').optional().isIn(['now_playing', 'coming_soon', 'ended']),
+  query('status').optional().isIn(['active', 'inactive', 'coming_soon']),
   query('search').optional().trim(),
-  query('sortBy').optional().isIn(['title', 'releaseDate', 'rating', 'duration']),
+  query('sortBy').optional().isIn(['title', 'releaseDate', 'createdAt']),
   query('sortOrder').optional().isIn(['asc', 'desc'])
 ], optionalAuth, async (req, res) => {
   try {
@@ -118,75 +120,58 @@ router.get('/', [
       language,
       status,
       search,
-      sortBy = 'releaseDate',
+      sortBy = 'createdAt',
       sortOrder = 'desc'
     } = req.query;
 
-    let filteredMovies = [...mockMovies];
-
-    // Apply filters
+    // Build query
+    let query = { isActive: true };
+    
     if (genre) {
-      filteredMovies = filteredMovies.filter(movie => 
-        movie.genre.some(g => g.toLowerCase().includes(genre.toLowerCase()))
-      );
+      query.genre = { $regex: genre, $options: 'i' };
     }
-
+    
     if (language) {
-      filteredMovies = filteredMovies.filter(movie => 
-        movie.language.toLowerCase().includes(language.toLowerCase())
-      );
+      query.language = { $regex: language, $options: 'i' };
     }
-
+    
     if (status) {
-      filteredMovies = filteredMovies.filter(movie => movie.status === status);
+      query.status = status;
     }
-
+    
     if (search) {
-      const searchTerm = search.toLowerCase();
-      filteredMovies = filteredMovies.filter(movie =>
-        movie.title.toLowerCase().includes(searchTerm) ||
-        movie.description.toLowerCase().includes(searchTerm) ||
-        movie.cast.some(actor => actor.toLowerCase().includes(searchTerm)) ||
-        movie.director.toLowerCase().includes(searchTerm)
-      );
+      query.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { director: { $regex: search, $options: 'i' } },
+        { cast: { $in: [new RegExp(search, 'i')] } }
+      ];
     }
 
-    // Apply sorting
-    filteredMovies.sort((a, b) => {
-      let aValue = a[sortBy];
-      let bValue = b[sortBy];
+    // Build sort object
+    const sort = {};
+    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-      if (sortBy === 'releaseDate') {
-        aValue = new Date(aValue);
-        bValue = new Date(bValue);
-      }
+    // Execute query with pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const movies = await Movie.find(query)
+      .sort(sort)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .populate('theatreOwner', 'theatreName ownerName')
+      .lean();
 
-      if (sortOrder === 'desc') {
-        return bValue > aValue ? 1 : -1;
-      } else {
-        return aValue > bValue ? 1 : -1;
-      }
-    });
-
-    // Apply pagination
-    const startIndex = (parseInt(page) - 1) * parseInt(limit);
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedMovies = filteredMovies.slice(startIndex, endIndex);
+    const totalMovies = await Movie.countDocuments(query);
 
     res.json({
       success: true,
-      data: paginatedMovies,
+      data: movies,
       pagination: {
         currentPage: parseInt(page),
-        totalPages: Math.ceil(filteredMovies.length / parseInt(limit)),
-        totalItems: filteredMovies.length,
-        hasNext: endIndex < filteredMovies.length,
+        totalPages: Math.ceil(totalMovies / parseInt(limit)),
+        totalItems: totalMovies,
+        hasNext: skip + parseInt(limit) < totalMovies,
         hasPrev: parseInt(page) > 1
-      },
-      filters: {
-        availableGenres: [...new Set(mockMovies.flatMap(movie => movie.genre))],
-        availableLanguages: [...new Set(mockMovies.map(movie => movie.language))],
-        availableStatuses: ['now_playing', 'coming_soon', 'ended']
       }
     });
   } catch (error) {
@@ -194,6 +179,41 @@ router.get('/', [
     res.status(500).json({
       success: false,
       error: 'Failed to fetch movies'
+    });
+  }
+});
+
+// Get movies for specific theatre owner (admin dashboard)
+router.get('/theatre-owner/:theatreOwnerId', authenticateTheatreOwner, async (req, res) => {
+  try {
+    const { theatreOwnerId } = req.params;
+    
+    // Verify the user is accessing their own movies or is admin
+    if (req.theatreOwner._id.toString() !== theatreOwnerId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Not authorized to access these movies'
+      });
+    }
+
+    const movies = await Movie.find({ 
+      theatreOwner: theatreOwnerId,
+      isActive: true 
+    })
+    .sort({ createdAt: -1 })
+    .populate('theatreOwner', 'theatreName ownerName')
+    .lean();
+
+    res.json({
+      success: true,
+      data: movies,
+      count: movies.length
+    });
+  } catch (error) {
+    console.error('Get theatre owner movies error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch theatre owner movies'
     });
   }
 });
@@ -412,7 +432,7 @@ router.get('/:movieId/recommendations', optionalAuth, async (req, res) => {
 
 // Add new movie (for theatre owners)
 router.post('/', [
-  authenticateUser,
+  authenticateTheatreOwner,
   body('title').trim().notEmpty(),
   body('genre').trim().notEmpty(),
   body('duration').trim().notEmpty(),
@@ -430,10 +450,13 @@ router.post('/', [
       description: req.body.description || '',
       director: req.body.director || '',
       cast: Array.isArray(req.body.cast) ? req.body.cast : (req.body.cast ? req.body.cast.split(',').map(c => c.trim()) : []),
-      language: req.body.language || 'English',
+      movieLanguage: req.body.language || 'English',
+      language: 'english',
       releaseDate: req.body.releaseDate || '',
       format: req.body.format || '2D',
-      createdBy: req.user._id
+      createdBy: req.theatreOwner._id,
+      theatreOwner: req.theatreOwner._id,
+      addedBy: 'theatre_owner'
     };
 
     const saved = await Movie.create(moviePayload);
@@ -449,7 +472,7 @@ router.post('/', [
 });
 
 // Update movie (for theatre owners)
-router.put('/:movieId', authenticateUser, async (req, res) => {
+router.put('/:movieId', authenticateTheatreOwner, async (req, res) => {
   try {
     const movieId = req.params.movieId;
     const movie = await Movie.findById(movieId);
@@ -457,8 +480,8 @@ router.put('/:movieId', authenticateUser, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Movie not found' });
     }
 
-    // Only owner or admin can edit
-    if (movie.createdBy.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    // Only theatre owner who created it can edit
+    if (movie.theatreOwner?.toString() !== req.theatreOwner._id.toString()) {
       return res.status(403).json({ success: false, error: 'Not authorized to update this movie' });
     }
 
@@ -472,7 +495,7 @@ router.put('/:movieId', authenticateUser, async (req, res) => {
       description: req.body.description ?? movie.description,
       director: req.body.director ?? movie.director,
       cast: req.body.cast ? (Array.isArray(req.body.cast) ? req.body.cast : req.body.cast.split(',').map(c => c.trim())) : movie.cast,
-      language: req.body.language ?? movie.language,
+      movieLanguage: req.body.language ?? movie.movieLanguage,
       releaseDate: req.body.releaseDate ?? movie.releaseDate,
       format: req.body.format ?? movie.format
     });
@@ -489,13 +512,13 @@ router.put('/:movieId', authenticateUser, async (req, res) => {
 });
 
 // Delete movie (for theatre owners)
-router.delete('/:movieId', authenticateUser, async (req, res) => {
+router.delete('/:movieId', authenticateTheatreOwner, async (req, res) => {
   try {
     const movieId = req.params.movieId;
     const movie = await Movie.findById(movieId);
     if (!movie) return res.status(404).json({ success: false, error: 'Movie not found' });
 
-    if (movie.createdBy.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    if (movie.theatreOwner?.toString() !== req.theatreOwner._id.toString()) {
       return res.status(403).json({ success: false, error: 'Not authorized to delete this movie' });
     }
 
