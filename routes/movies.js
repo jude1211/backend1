@@ -3,6 +3,7 @@ const { query, body } = require('express-validator');
 const { optionalAuth, authenticateUser } = require('../middleware/auth');
 const { authenticateTheatreOwner } = require('../middleware/theatreOwnerAuth');
 const Movie = require('../models/Movie');
+const Theatre = require('../models/Theatre');
 
 const router = express.Router();
 
@@ -158,7 +159,7 @@ router.get('/', [
       .sort(sort)
       .skip(skip)
       .limit(parseInt(limit))
-      .populate('theatreOwner', 'theatreName ownerName')
+      .populate('theatreOwner', 'theatreName ownerName location.city')
       .lean();
 
     const totalMovies = await Movie.countDocuments(query);
@@ -180,6 +181,83 @@ router.get('/', [
       success: false,
       error: 'Failed to fetch movies'
     });
+  }
+});
+
+// Now Showing: status active OR releaseDate <= today
+router.get('/now-showing', async (req, res) => {
+  try {
+    const today = new Date();
+    const movies = await Movie.find({ isActive: true })
+      .sort({ createdAt: -1 })
+      .populate('theatreOwner', 'theatreName location.city')
+      .lean();
+
+    // Show ONLY active movies in Now Showing, per requirement
+    const normalized = movies.filter(m => m.status === 'active');
+
+    res.json({ success: true, data: normalized });
+  } catch (error) {
+    console.error('Now showing error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch now showing movies' });
+  }
+});
+
+// Coming Soon: status coming_soon OR releaseDate > today, but exclude active
+router.get('/coming-soon', async (req, res) => {
+  try {
+    const today = new Date();
+    const movies = await Movie.find({ isActive: true })
+      .sort({ createdAt: -1 })
+      .populate('theatreOwner', 'theatreName location.city')
+      .lean();
+
+    const filtered = movies.filter(m => {
+      if (m.status === 'active') return false;
+      const statusComing = m.status === 'coming_soon';
+      const d = m.releaseDate ? new Date(m.releaseDate) : null;
+      const inFuture = d && !isNaN(d.getTime()) ? d > today : false;
+      return statusComing || inFuture;
+    });
+
+    res.json({ success: true, data: filtered });
+  } catch (error) {
+    console.error('Coming soon error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch coming soon movies' });
+  }
+});
+
+// Public: Movies with theatres filtered by location (city/town)
+router.get('/by-location', async (req, res) => {
+  try {
+    const { city, limit = 50 } = req.query;
+
+    // Always start from all active movies
+    const movies = await Movie.find({ isActive: true })
+      .populate({ path: 'theatreOwner', select: 'theatreName location.city isActive' })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .lean();
+
+    // If no city provided, just return movies unchanged (global default)
+    if (!city || !String(city).trim()) {
+      return res.json({ success: true, data: movies });
+    }
+
+    // Build regex for city match (case-insensitive)
+    const cityRegex = new RegExp(String(city), 'i');
+
+    // Annotate each movie: inCity if theatre owner's city matches the selected city
+    const annotated = movies.map(m => {
+      const ownerCity = (m.theatreOwner?.location?.city || '');
+      const inCity = cityRegex.test(ownerCity);
+      return { ...m, _inCity: inCity };
+    });
+
+    res.json({ success: true, data: annotated });
+  } catch (error) {
+    console.error('Movies by location error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch movies by location' });
   }
 });
 
