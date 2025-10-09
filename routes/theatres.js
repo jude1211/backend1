@@ -7,6 +7,7 @@ const { optionalAuth } = require('../middleware/auth');
 const UploadService = require('../services/uploadService');
 
 const router = express.Router();
+const { authenticateTheatreOwner } = require('../middleware/theatreOwnerAuth');
 
 // Multer configuration for handling theatre owner application document uploads
 const applicationUpload = multer({
@@ -261,6 +262,58 @@ router.get('/owner-applications/check-email/:email', async (req, res) => {
       success: false,
       error: 'Failed to check email availability'
     });
+  }
+});
+
+// Theatre Owner: List configured screens for this owner
+// For MVP we derive screens from TheatreOwner.screenCount and return numbered screens
+router.get('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res) => {
+  try {
+    const { ownerId } = req.params;
+    const owner = await require('../models/TheatreOwner').findById(ownerId).lean();
+    if (!owner) {
+      return res.status(404).json({ success: false, error: 'Theatre owner not found' });
+    }
+    // Only allow self-access
+    if (String(req.theatreOwner._id) !== String(ownerId)) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+    const count = Math.max(1, parseInt(owner.screenCount || 1));
+    const screens = Array.from({ length: count }).map((_, idx) => ({
+      screenNumber: idx + 1,
+      name: `Screen ${idx + 1}`,
+      type: owner.theatreType === 'IMAX' ? 'IMAX' : '2D'
+    }));
+    res.json({ success: true, data: { screenCount: count, screens } });
+  } catch (error) {
+    console.error('Owner screens error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch screens' });
+  }
+});
+
+// Theatre Owner: Add a new screen (appends to owner's count and returns new list)
+router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res) => {
+  try {
+    const { ownerId } = req.params;
+    const { name, type = '2D' } = req.body || {};
+    if (String(req.theatreOwner._id) !== String(ownerId)) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+    const TheatreOwner = require('../models/TheatreOwner');
+    const owner = await TheatreOwner.findById(ownerId);
+    if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
+    owner.screenCount = Math.max(0, parseInt(owner.screenCount || 0)) + 1;
+    await owner.save();
+    const count = owner.screenCount;
+    const screens = Array.from({ length: count }).map((_, idx) => ({
+      screenNumber: idx + 1,
+      name: name && idx + 1 === count ? name : `Screen ${idx + 1}`,
+      type
+    }));
+    res.status(201).json({ success: true, data: { screenCount: count, screens } });
+  } catch (error) {
+    console.error('Add owner screen error:', error);
+    res.status(500).json({ success: false, error: 'Failed to add screen' });
   }
 });
 

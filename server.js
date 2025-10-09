@@ -15,6 +15,7 @@ const bookingRoutes = require('./routes/bookings');
 const theatreRoutes = require('./routes/theatres');
 const theatreOwnerAuthRoutes = require('./routes/theatreOwnerAuth');
 const offlineBookingRoutes = require('./routes/offlineBookings');
+const screenRoutes = require('./routes/screens');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -96,6 +97,9 @@ app.get('/health', (req, res) => {
 
 // API routes
 const apiVersion = process.env.API_VERSION || 'v1';
+const seatLayoutRoutes = require('./routes/seatLayout');
+const showSeatLayoutRoutes = require('./routes/showSeatLayout');
+const adminRoutes = require('./routes/admin');
 app.use(`/api/${apiVersion}/auth`, authRoutes);
 app.use(`/api/${apiVersion}/users`, userRoutes);
 app.use(`/api/${apiVersion}/movies`, movieRoutes);
@@ -103,6 +107,10 @@ app.use(`/api/${apiVersion}/bookings`, bookingRoutes);
 app.use(`/api/${apiVersion}/theatres`, theatreRoutes);
 app.use(`/api/${apiVersion}/theatre-owner`, theatreOwnerAuthRoutes);
 app.use(`/api/${apiVersion}/offline-bookings`, offlineBookingRoutes);
+app.use(`/api/${apiVersion}/screens`, screenRoutes);
+app.use(`/api/${apiVersion}/seat-layout`, seatLayoutRoutes);
+app.use(`/api/${apiVersion}/shows`, showSeatLayoutRoutes);
+app.use(`/api/${apiVersion}/admin`, adminRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {

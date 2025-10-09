@@ -16,7 +16,18 @@ const MovieSchema = new mongoose.Schema(
     movieLanguage: { type: String, default: 'English' },
     // Keep a generic 'language' field for compatibility but default to english to avoid Mongo text index override issues
     language: { type: String, default: 'english' },
-    releaseDate: { type: String, default: '' },
+
+  // ISO date string for release date
+  releaseDate: { type: String, default: '' },
+
+  // Enable advance booking before release
+  advanceBookingEnabled: { type: Boolean, default: false },
+
+  // Track when the movie first started showing in this theatre (ISO date string)
+  firstShowDate: { type: String, default: '' },
+
+  // Optionally store runtime in days (can be calculated dynamically)
+  runtimeDays: { type: Number, default: 0 },
 
     // Ownership/relations
     theatreOwner: { type: mongoose.Schema.Types.ObjectId, ref: 'TheatreOwner', index: true },
@@ -27,9 +38,15 @@ const MovieSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
     addedBy: { type: String, enum: ['theatre_owner', 'admin'], default: 'theatre_owner' },
 
-    // Ratings from customers would be stored elsewhere; keep aggregate here if needed
-    aggregateRating: { type: Number, default: 0 },
-    ratingsCount: { type: Number, default: 0 }
+  // Ratings from customers would be stored elsewhere; keep aggregate here if needed
+  aggregateRating: { type: Number, default: 0 },
+  ratingsCount: { type: Number, default: 0 },
+
+  // YouTube trailer URL
+  trailerUrl: { type: String, default: '' },
+
+  // TMDB ID for API integration
+  tmdbId: { type: Number, default: null }
   },
   { timestamps: true }
 );

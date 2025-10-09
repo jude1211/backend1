@@ -4,6 +4,8 @@ const { optionalAuth, authenticateUser } = require('../middleware/auth');
 const { authenticateTheatreOwner } = require('../middleware/theatreOwnerAuth');
 const Movie = require('../models/Movie');
 const Theatre = require('../models/Theatre');
+const ScreenShow = require('../models/ScreenShow');
+const ScreenLayout = require('../models/ScreenLayout');
 
 const router = express.Router();
 
@@ -162,11 +164,39 @@ router.get('/', [
       .populate('theatreOwner', 'theatreName ownerName location.city')
       .lean();
 
+    // Enhance each movie with status, runtimeDays, and advance booking info
+    const today = new Date();
+    const enhancedMovies = movies.map(m => {
+      let status = 'Coming Soon';
+      let runtimeDays = 0;
+      let releaseDate = m.releaseDate;
+      let advanceBookingEnabled = m.advanceBookingEnabled || false;
+      if (m.releaseDate) {
+        const release = new Date(m.releaseDate);
+        if (release <= today) {
+          status = 'Now Showing';
+          if (m.firstShowDate) {
+            const firstShow = new Date(m.firstShowDate);
+            runtimeDays = Math.max(1, Math.ceil((today - firstShow) / (1000 * 60 * 60 * 24)));
+          } else {
+            runtimeDays = Math.max(1, Math.ceil((today - release) / (1000 * 60 * 60 * 24)));
+          }
+        }
+      }
+      return {
+        ...m,
+        status,
+        runtimeDays,
+        releaseDate,
+        advanceBookingEnabled
+      };
+    });
+
     const totalMovies = await Movie.countDocuments(query);
 
     res.json({
       success: true,
-      data: movies,
+      data: enhancedMovies,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(totalMovies / parseInt(limit)),
@@ -261,6 +291,73 @@ router.get('/by-location', async (req, res) => {
   }
 });
 
+// Active movies with assigned screens/shows (for landing page)
+router.get('/active-with-shows', async (req, res) => {
+  try {
+    // Find all shows and populate minimal movie fields
+    const shows = await ScreenShow.find({ status: 'Active' })
+      .populate('movieId', 'title posterUrl genre movieLanguage duration status isActive')
+      .lean();
+
+    // Filter only shows whose movie is active and have at least one valid showtime
+    const activeShows = shows.filter(s => {
+      const hasActiveMovie = s.movieId && (s.movieId.status === 'active');
+      const validTimes = Array.isArray(s.showtimes) && s.showtimes.filter(t => typeof t === 'string' && t.trim().length > 0).length > 0;
+      return hasActiveMovie && validTimes;
+    });
+
+    // Group by movie
+    const movieIdToData = new Map();
+    for (const sh of activeShows) {
+      const key = String(sh.movieId._id);
+      if (!movieIdToData.has(key)) {
+        movieIdToData.set(key, {
+          movie: {
+            _id: sh.movieId._id,
+            title: sh.movieId.title,
+            posterUrl: sh.movieId.posterUrl,
+            genre: sh.movieId.genre,
+            language: sh.movieId.movieLanguage || 'English',
+            duration: sh.movieId.duration
+          },
+          screens: {}
+        });
+      }
+      const bucket = movieIdToData.get(key);
+      const screenKey = String(sh.screenId);
+      if (!bucket.screens[screenKey]) {
+        bucket.screens[screenKey] = {
+          screenId: sh.screenId,
+          showGroups: []
+        };
+      }
+      // Deduplicate normalized times per (screen,date)
+      const normalizedTimes = Array.from(new Set((sh.showtimes || []).map(t => String(t).trim()).filter(Boolean)));
+      if (normalizedTimes.length > 0) {
+        bucket.screens[screenKey].showGroups.push({
+          bookingDate: sh.bookingDate,
+          showtimes: normalizedTimes
+        });
+      }
+    }
+
+    // Remove screens without showGroups and movies without any screens
+    const result = Array.from(movieIdToData.values())
+      .map(entry => {
+        const screens = Object.values(entry.screens)
+          .map(scr => ({ ...scr, showGroups: (scr.showGroups || []).filter(g => Array.isArray(g.showtimes) && g.showtimes.length > 0) }))
+          .filter(scr => (scr.showGroups || []).length > 0);
+        return { movie: entry.movie, screens };
+      })
+      .filter(item => (item.screens || []).length > 0);
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('Active with shows error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch active movies with shows' });
+  }
+});
+
 // Get movies for specific theatre owner (admin dashboard)
 router.get('/theatre-owner/:theatreOwnerId', authenticateTheatreOwner, async (req, res) => {
   try {
@@ -296,11 +393,13 @@ router.get('/theatre-owner/:theatreOwnerId', authenticateTheatreOwner, async (re
   }
 });
 
-// Get movie by ID
-router.get('/:movieId', optionalAuth, async (req, res) => {
+// Enable/disable advance booking for a movie
+router.patch('/:movieId/advance-booking', authenticateTheatreOwner, async (req, res) => {
   try {
-    const movie = mockMovies.find(m => m.id === req.params.movieId);
-
+    const { movieId } = req.params;
+    const { enabled } = req.body;
+    
+    const movie = await Movie.findById(movieId);
     if (!movie) {
       return res.status(404).json({
         success: false,
@@ -308,13 +407,72 @@ router.get('/:movieId', optionalAuth, async (req, res) => {
       });
     }
 
-    // Add user-specific data if authenticated
-    let movieData = { ...movie };
-    if (req.user) {
-      const isFavorite = req.user.favoriteMovies.some(fav => fav.movieId === movie.id);
-      movieData.isFavorite = isFavorite;
+    // Check if the theatre owner owns this movie
+    if (movie.theatreOwner && movie.theatreOwner.toString() !== req.theatreOwner._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        error: 'Not authorized to modify this movie'
+      });
     }
 
+    movie.advanceBookingEnabled = Boolean(enabled);
+    await movie.save();
+
+    res.json({
+      success: true,
+      data: {
+        movieId: movie._id,
+        advanceBookingEnabled: movie.advanceBookingEnabled,
+        releaseDate: movie.releaseDate
+      }
+    });
+  } catch (error) {
+    console.error('Update advance booking error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update advance booking'
+    });
+  }
+});
+
+// Get movie by ID
+router.get('/:movieId', optionalAuth, async (req, res) => {
+  try {
+    const movieId = req.params.movieId;
+    const movie = await Movie.findById(movieId);
+    if (!movie) {
+      return res.status(404).json({
+        success: false,
+        error: 'Movie not found'
+      });
+    }
+    let movieData = movie.toObject();
+    // Enhance with status, runtimeDays, and advance booking info
+    const today = new Date();
+    let status = 'Coming Soon';
+    let runtimeDays = 0;
+    let releaseDate = movie.releaseDate;
+    let advanceBookingEnabled = movie.advanceBookingEnabled || false;
+    if (movie.releaseDate) {
+      const release = new Date(movie.releaseDate);
+      if (release <= today) {
+        status = 'Now Showing';
+        if (movie.firstShowDate) {
+          const firstShow = new Date(movie.firstShowDate);
+          runtimeDays = Math.max(1, Math.ceil((today - firstShow) / (1000 * 60 * 60 * 24)));
+        } else {
+          runtimeDays = Math.max(1, Math.ceil((today - release) / (1000 * 60 * 60 * 24)));
+        }
+      }
+    }
+    movieData.status = status;
+    movieData.runtimeDays = runtimeDays;
+    movieData.releaseDate = releaseDate;
+    movieData.advanceBookingEnabled = advanceBookingEnabled;
+    if (req.user && req.user.favoriteMovies) {
+      const isFavorite = req.user.favoriteMovies.some(fav => fav.movieId === movieId);
+      movieData.isFavorite = isFavorite;
+    }
     res.json({
       success: true,
       data: movieData
@@ -338,112 +496,36 @@ router.get('/:movieId/showtimes', [
     const { city = 'Mumbai', date, theatreId } = req.query;
     const movieId = req.params.movieId;
 
-    const movie = mockMovies.find(m => m.id === movieId);
-    if (!movie) {
-      return res.status(404).json({
-        success: false,
-        error: 'Movie not found'
+    // Find all active shows for this movie
+    const shows = await ScreenShow.find({ movieId, status: 'Active' })
+      .populate('theatreId', 'name location')
+      .populate('screenId', 'screenNumber screenType')
+      .lean();
+
+    // Group by screen and date
+    const screens = {};
+    for (const show of shows) {
+      const screenKey = String(show.screenId?._id || show.screenId);
+      if (!screens[screenKey]) {
+        screens[screenKey] = {
+          screenId: show.screenId?._id || show.screenId,
+          screenNumber: show.screenId?.screenNumber,
+          screenType: show.screenId?.screenType,
+          showGroups: []
+        };
+      }
+      screens[screenKey].showGroups.push({
+        bookingDate: show.bookingDate,
+        showtimes: show.showtimes || [],
+        theatre: show.theatreId?.name || '',
+        theatreId: show.theatreId?._id || show.theatreId,
+        availableSeats: show.availableSeats || 0
       });
     }
 
-    // Mock showtimes data
-    const mockShowtimes = [
-      {
-        id: 'show1',
-        theatreId: '507f1f77bcf86cd799439011',
-        theatreName: 'PVR Cinemas - Phoenix Mall',
-        location: {
-          address: 'Phoenix Mall, Kurla West',
-          city: 'Mumbai',
-          area: 'Kurla'
-        },
-        screen: {
-          screenNumber: 1,
-          screenType: '2D'
-        },
-        times: ['10:30 AM', '1:45 PM', '5:00 PM', '8:15 PM', '11:30 PM'],
-        availableSeats: 120,
-        totalSeats: 150,
-        pricing: {
-          regular: 200,
-          premium: 350,
-          recliner: 500
-        }
-      },
-      {
-        id: 'show2',
-        theatreId: '507f1f77bcf86cd799439012',
-        theatreName: 'INOX - R City Mall',
-        location: {
-          address: 'R City Mall, Ghatkopar West',
-          city: 'Mumbai',
-          area: 'Ghatkopar'
-        },
-        screen: {
-          screenNumber: 3,
-          screenType: 'IMAX'
-        },
-        times: ['11:00 AM', '2:30 PM', '6:00 PM', '9:30 PM'],
-        availableSeats: 85,
-        totalSeats: 100,
-        pricing: {
-          regular: 300,
-          premium: 450,
-          recliner: 650
-        }
-      },
-      {
-        id: 'show3',
-        theatreId: '507f1f77bcf86cd799439013',
-        theatreName: 'Cinepolis - Fun Republic',
-        location: {
-          address: 'Fun Republic Mall, Andheri West',
-          city: 'Mumbai',
-          area: 'Andheri'
-        },
-        screen: {
-          screenNumber: 2,
-          screenType: '3D'
-        },
-        times: ['12:15 PM', '3:45 PM', '7:15 PM', '10:45 PM'],
-        availableSeats: 95,
-        totalSeats: 120,
-        pricing: {
-          regular: 250,
-          premium: 400,
-          recliner: 550
-        }
-      }
-    ];
-
-    let filteredShowtimes = mockShowtimes;
-
-    // Filter by theatre if specified
-    if (theatreId) {
-      filteredShowtimes = filteredShowtimes.filter(show => show.theatreId === theatreId);
-    }
-
-    // Filter by city
-    filteredShowtimes = filteredShowtimes.filter(show => 
-      show.location.city.toLowerCase() === city.toLowerCase()
-    );
-
     res.json({
       success: true,
-      data: {
-        movie: {
-          id: movie.id,
-          title: movie.title,
-          poster: movie.poster,
-          duration: movie.duration,
-          genre: movie.genre,
-          rating: movie.rating,
-          language: movie.language
-        },
-        showtimes: filteredShowtimes,
-        date: date || new Date().toISOString().split('T')[0],
-        city
-      }
+      data: Object.values(screens)
     });
   } catch (error) {
     console.error('Get showtimes error:', error);
@@ -518,6 +600,32 @@ router.post('/', [
   body('format').optional().isIn(['2D', '3D'])
 ], async (req, res) => {
   try {
+    const fetchTrailerUrl = async (tmdbId) => {
+      if (!tmdbId) return '';
+      const apiKey = process.env.TMDB_API_KEY;
+      if (!apiKey) return '';
+      const url = `https://api.themoviedb.org/3/movie/${tmdbId}/videos?api_key=${apiKey}`;
+      try {
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (Array.isArray(data.results)) {
+          const trailer = data.results.find(v => v.type === 'Trailer' && v.site === 'YouTube');
+          if (trailer) {
+            return `https://www.youtube.com/watch?v=${trailer.key}`;
+          }
+        }
+      } catch (e) { /* ignore */ }
+      return '';
+    };
+
+    const tmdbId = req.body.tmdbId;
+    let trailerUrl = req.body.trailerUrl || '';
+    
+    // If no trailer URL provided but we have TMDB ID, try to fetch from TMDB
+    if (!trailerUrl && tmdbId) {
+      trailerUrl = await fetchTrailerUrl(tmdbId);
+    }
+
     const moviePayload = {
       title: req.body.title,
       genre: req.body.genre,
@@ -534,7 +642,9 @@ router.post('/', [
       format: req.body.format || '2D',
       createdBy: req.theatreOwner._id,
       theatreOwner: req.theatreOwner._id,
-      addedBy: 'theatre_owner'
+      addedBy: 'theatre_owner',
+      trailerUrl,
+      tmdbId: tmdbId || null
     };
 
     const saved = await Movie.create(moviePayload);
