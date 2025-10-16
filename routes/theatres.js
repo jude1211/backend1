@@ -288,21 +288,23 @@ router.get('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res)
       try {
         const application = await TheatreOwnerApplication.findById(owner.applicationId).lean();
         if (application && application.screens && application.screens.length > 0) {
-          // Use detailed screen data from application
-          screens = application.screens.map(screen => ({
-            screenNumber: screen.screenNumber,
-            name: `Screen ${screen.screenNumber}`,
-            type: screen.type || '2D',
-            seatingCapacity: screen.seatingCapacity,
-            seatLayout: screen.seatLayout,
-            baseTicketPrice: screen.baseTicketPrice,
-            premiumPrice: screen.premiumPrice,
-            vipPrice: screen.vipPrice,
-            rows: screen.rows,
-            columns: screen.columns,
-            aisleColumns: screen.aisleColumns,
-            seatClasses: screen.seatClasses || []
-          }));
+          // Use detailed screen data from application, sorted by screen number
+          screens = application.screens
+            .sort((a, b) => a.screenNumber - b.screenNumber)
+            .map(screen => ({
+              screenNumber: screen.screenNumber,
+              name: `Screen ${screen.screenNumber}`,
+              type: screen.type || '2D',
+              seatingCapacity: screen.seatingCapacity,
+              seatLayout: screen.seatLayout,
+              baseTicketPrice: screen.baseTicketPrice,
+              premiumPrice: screen.premiumPrice,
+              vipPrice: screen.vipPrice,
+              rows: screen.rows,
+              columns: screen.columns,
+              aisleColumns: screen.aisleColumns,
+              seatClasses: screen.seatClasses || []
+            }));
         }
       } catch (appError) {
         console.warn('Failed to fetch screen data from application:', appError);
@@ -360,11 +362,35 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
     const owner = await TheatreOwner.findById(ownerId);
     if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
     
-    // Update screen count
-    owner.screenCount = Math.max(0, parseInt(owner.screenCount || 0)) + 1;
-    await owner.save();
+    // Find the next available screen number
+    let newScreenNumber = 1;
+    if (owner.applicationId) {
+      try {
+        const application = await TheatreOwnerApplication.findById(owner.applicationId);
+        if (application && application.screens && application.screens.length > 0) {
+          // Find the highest screen number and add 1
+          const existingScreenNumbers = application.screens.map(s => s.screenNumber);
+          const maxScreenNumber = Math.max(...existingScreenNumbers);
+          newScreenNumber = maxScreenNumber + 1;
+          console.log(`Adding new screen - existing screens: [${existingScreenNumbers.join(', ')}], new screen number: ${newScreenNumber}`);
+        } else {
+          console.log(`Adding first screen - new screen number: ${newScreenNumber}`);
+        }
+      } catch (appError) {
+        console.warn('Failed to find next screen number from application:', appError);
+        // Fallback to screen count
+        newScreenNumber = Math.max(1, parseInt(owner.screenCount || 0)) + 1;
+        console.log(`Fallback to screen count - new screen number: ${newScreenNumber}`);
+      }
+    } else {
+      // No application data, use screen count
+      newScreenNumber = Math.max(1, parseInt(owner.screenCount || 0)) + 1;
+      console.log(`No application data - using screen count - new screen number: ${newScreenNumber}`);
+    }
     
-    const newScreenNumber = owner.screenCount;
+    // Update screen count
+    owner.screenCount = Math.max(owner.screenCount || 0, newScreenNumber);
+    await owner.save();
     
     // Also add the screen to the theatre owner application if it exists
     if (owner.applicationId) {
@@ -399,6 +425,90 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
         // Don't fail the entire operation for this
       }
     }
+
+    // Create screen layout in screenlayouts collection
+    try {
+      const ScreenLayout = require('../models/ScreenLayout');
+      
+      // Try to get configuration from Screen 1, fallback to defaults if not found
+      let screenConfig = {
+        meta: {
+          rows: 8,
+          columns: 12,
+          aisles: [5, 9]
+        },
+        seatClasses: [
+          {
+            className: 'Gold',
+            price: 250,
+            color: '#f59e0b',
+            tier: 'Premium',
+            rows: 'A-C'
+          },
+          {
+            className: 'Silver',
+            price: 180,
+            color: '#9ca3af',
+            tier: 'Base',
+            rows: 'D-F'
+          },
+          {
+            className: 'Balcony',
+            price: 320,
+            color: '#22c55e',
+            tier: 'VIP',
+            rows: 'G-H'
+          }
+        ]
+      };
+
+      // Try to copy configuration from Screen 1
+      try {
+        const screen1Layout = await ScreenLayout.findOne({ 
+          screenId: '1',
+          theatreId: owner._id 
+        });
+        
+        if (screen1Layout) {
+          console.log(`Copying configuration from Screen 1 for new Screen ${newScreenNumber}`);
+          screenConfig = {
+            meta: {
+              rows: screen1Layout.meta?.rows || 8,
+              columns: screen1Layout.meta?.columns || 12,
+              aisles: screen1Layout.meta?.aisles || [5, 9]
+            },
+            seatClasses: screen1Layout.seatClasses && screen1Layout.seatClasses.length > 0 
+              ? screen1Layout.seatClasses 
+              : screenConfig.seatClasses
+          };
+        } else {
+          console.log(`Screen 1 layout not found, using default configuration for Screen ${newScreenNumber}`);
+        }
+      } catch (copyError) {
+        console.warn('Failed to copy from Screen 1, using defaults:', copyError);
+      }
+
+      const screenLayout = new ScreenLayout({
+        screenId: newScreenNumber.toString(),
+        theatreId: owner._id,
+        screenName: name || `Screen ${newScreenNumber}`,
+        meta: screenConfig.meta,
+        seatClasses: screenConfig.seatClasses,
+        seats: [], // Empty initially - will be populated when owner configures layout
+        updatedBy: owner._id.toString()
+      });
+
+      await screenLayout.save();
+      console.log(`Created screen layout for screen ${newScreenNumber} with config from Screen 1:`, {
+        rows: screenConfig.meta.rows,
+        columns: screenConfig.meta.columns,
+        aisles: screenConfig.meta.aisles,
+        seatClassesCount: screenConfig.seatClasses.length
+      });
+    } catch (layoutError) {
+      console.error('Failed to create screen layout:', layoutError);
+      // Don't fail the entire operation for this
+    }
     
     const count = owner.screenCount;
     const screens = Array.from({ length: count }).map((_, idx) => ({
@@ -418,6 +528,122 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
   } catch (error) {
     console.error('Add owner screen error:', error);
     res.status(500).json({ success: false, error: 'Failed to add screen' });
+  }
+});
+
+// Theatre Owner: Sync missing screen layouts (utility endpoint)
+router.post('/owner/:ownerId/sync-layouts', authenticateTheatreOwner, async (req, res) => {
+  try {
+    const { ownerId } = req.params;
+    if (String(req.theatreOwner._id) !== String(ownerId)) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+
+    const TheatreOwner = require('../models/TheatreOwner');
+    const ScreenLayout = require('../models/ScreenLayout');
+    
+    const owner = await TheatreOwner.findById(ownerId);
+    if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
+
+    const screenCount = owner.screenCount || 0;
+    const createdLayouts = [];
+    const existingLayouts = [];
+
+    // Get Screen 1 configuration to use as template
+    let templateConfig = {
+      meta: {
+        rows: 8,
+        columns: 12,
+        aisles: [5, 9]
+      },
+      seatClasses: [
+        {
+          className: 'Gold',
+          price: 250,
+          color: '#f59e0b',
+          tier: 'Premium',
+          rows: 'A-C'
+        },
+        {
+          className: 'Silver',
+          price: 180,
+          color: '#9ca3af',
+          tier: 'Base',
+          rows: 'D-F'
+        },
+        {
+          className: 'Balcony',
+          price: 320,
+          color: '#22c55e',
+          tier: 'VIP',
+          rows: 'G-H'
+        }
+      ]
+    };
+
+    // Try to get configuration from Screen 1
+    try {
+      const screen1Layout = await ScreenLayout.findOne({ 
+        screenId: '1',
+        theatreId: owner._id 
+      });
+      
+      if (screen1Layout) {
+        console.log('Using Screen 1 configuration as template for missing layouts');
+        templateConfig = {
+          meta: {
+            rows: screen1Layout.meta?.rows || 8,
+            columns: screen1Layout.meta?.columns || 12,
+            aisles: screen1Layout.meta?.aisles || [5, 9]
+          },
+          seatClasses: screen1Layout.seatClasses && screen1Layout.seatClasses.length > 0 
+            ? screen1Layout.seatClasses 
+            : templateConfig.seatClasses
+        };
+      }
+    } catch (templateError) {
+      console.warn('Failed to get Screen 1 template, using defaults:', templateError);
+    }
+
+    // Check each screen and create missing layouts
+    for (let screenNumber = 1; screenNumber <= screenCount; screenNumber++) {
+      const existingLayout = await ScreenLayout.findOne({ 
+        screenId: screenNumber.toString(),
+        theatreId: owner._id 
+      });
+
+      if (existingLayout) {
+        existingLayouts.push(screenNumber);
+      } else {
+        // Create missing layout using Screen 1 configuration
+        const screenLayout = new ScreenLayout({
+          screenId: screenNumber.toString(),
+          theatreId: owner._id,
+          screenName: `Screen ${screenNumber}`,
+          meta: templateConfig.meta,
+          seatClasses: templateConfig.seatClasses,
+          seats: [],
+          updatedBy: owner._id.toString()
+        });
+
+        await screenLayout.save();
+        createdLayouts.push(screenNumber);
+        console.log(`Created missing layout for screen ${screenNumber} using Screen 1 config`);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        totalScreens: screenCount,
+        existingLayouts,
+        createdLayouts,
+        message: `Synced ${createdLayouts.length} missing screen layouts`
+      }
+    });
+  } catch (error) {
+    console.error('Sync screen layouts error:', error);
+    res.status(500).json({ success: false, error: 'Failed to sync screen layouts' });
   }
 });
 
@@ -473,6 +699,168 @@ router.put('/owner/:ownerId/screens/:screenNumber', authenticateTheatreOwner, as
   } catch (error) {
     console.error('Update screen configuration error:', error);
     res.status(500).json({ success: false, error: 'Failed to update screen configuration' });
+  }
+});
+
+// Theatre Owner: Delete screen
+router.delete('/owner/:ownerId/screens/:screenId', authenticateTheatreOwner, async (req, res) => {
+  try {
+    const { ownerId, screenId } = req.params;
+    
+    if (String(req.theatreOwner._id) !== String(ownerId)) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+    
+    const TheatreOwner = require('../models/TheatreOwner');
+    const ScreenLayout = require('../models/ScreenLayout');
+    const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
+    
+    const owner = await TheatreOwner.findById(ownerId);
+    if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
+    
+    // Check if screen exists
+    const screenNumber = parseInt(screenId);
+    console.log(`Delete screen request - screenId: ${screenId}, screenNumber: ${screenNumber}, owner.screenCount: ${owner.screenCount}`);
+    console.log(`Owner data:`, { _id: owner._id, screenCount: owner.screenCount, name: owner.name });
+    
+    if (isNaN(screenNumber) || screenNumber < 1) {
+      console.log(`Invalid screen number: ${screenNumber}`);
+      return res.status(400).json({ success: false, error: 'Invalid screen ID' });
+    }
+    
+    // Check if screen exists in application data
+    let screenExists = false;
+    if (owner.applicationId) {
+      try {
+        const application = await TheatreOwnerApplication.findById(owner.applicationId);
+        if (application && application.screens) {
+          screenExists = application.screens.some(s => s.screenNumber === screenNumber);
+          console.log(`Screen exists in application: ${screenExists}, available screens:`, application.screens.map(s => s.screenNumber));
+        }
+      } catch (appError) {
+        console.warn('Failed to check screen in application:', appError);
+      }
+    }
+    
+    // If no application data, check against screen count
+    if (!owner.applicationId) {
+      if (screenNumber > owner.screenCount) {
+        console.log(`Screen validation failed - screenNumber: ${screenNumber}, owner.screenCount: ${owner.screenCount}`);
+        return res.status(404).json({ success: false, error: 'Screen not found' });
+      }
+    } else {
+      // If we have application data, check if screen exists there
+      if (!screenExists) {
+        console.log(`Screen validation failed - screen ${screenNumber} not found in application`);
+        return res.status(404).json({ success: false, error: 'Screen not found' });
+      }
+    }
+    
+    console.log(`Screen validation passed - proceeding with deletion`);
+    
+    // Delete screen layout from screenlayouts collection
+    try {
+      await ScreenLayout.deleteOne({ 
+        screenId: screenId,
+        theatreId: owner._id 
+      });
+      console.log(`Deleted screen layout for screen ${screenId}`);
+    } catch (layoutError) {
+      console.warn('Failed to delete screen layout:', layoutError);
+      // Don't fail the entire operation for this
+    }
+    
+    // Delete all shows for this screen from screenshows collection
+    try {
+      const ScreenShow = require('../models/ScreenShow');
+      const showResult = await ScreenShow.deleteMany({ 
+        screenId: screenId,
+        theatreOwnerId: owner._id 
+      });
+      console.log(`Deleted ${showResult.deletedCount} shows for screen ${screenId}`);
+    } catch (showError) {
+      console.warn('Failed to delete screen shows:', showError);
+      // Don't fail the entire operation for this
+    }
+    
+    // Delete all offline bookings for this screen
+    try {
+      const OfflineBooking = require('../models/OfflineBooking');
+      const bookingResult = await OfflineBooking.deleteMany({ 
+        'theatre.theatreId': owner._id,
+        'theatre.screen.screenNumber': screenNumber
+      });
+      console.log(`Deleted ${bookingResult.deletedCount} offline bookings for screen ${screenId}`);
+    } catch (bookingError) {
+      console.warn('Failed to delete offline bookings:', bookingError);
+      // Don't fail the entire operation for this
+    }
+    
+    // Delete all regular bookings for this screen
+    try {
+      const Booking = require('../models/Booking');
+      const regularBookingResult = await Booking.deleteMany({ 
+        'theatre.theatreId': owner._id,
+        'theatre.screen.screenNumber': screenNumber
+      });
+      console.log(`Deleted ${regularBookingResult.deletedCount} regular bookings for screen ${screenId}`);
+    } catch (bookingError) {
+      console.warn('Failed to delete regular bookings:', bookingError);
+      // Don't fail the entire operation for this
+    }
+    
+    // Remove screen from application if it exists
+    if (owner.applicationId) {
+      try {
+        const application = await TheatreOwnerApplication.findById(owner.applicationId);
+        if (application && application.screens) {
+          application.screens = application.screens.filter(s => s.screenNumber !== screenNumber);
+          await application.save();
+          console.log(`Removed screen ${screenId} from application`);
+        }
+      } catch (appError) {
+        console.warn('Failed to remove screen from application:', appError);
+        // Don't fail the entire operation for this
+      }
+    }
+    
+    // Update screen count to reflect actual number of screens
+    if (owner.applicationId) {
+      try {
+        const application = await TheatreOwnerApplication.findById(owner.applicationId);
+        if (application && application.screens) {
+          owner.screenCount = application.screens.length;
+        } else {
+          owner.screenCount = Math.max(0, owner.screenCount - 1);
+        }
+      } catch (appError) {
+        console.warn('Failed to update screen count from application:', appError);
+        owner.screenCount = Math.max(0, owner.screenCount - 1);
+      }
+    } else {
+      owner.screenCount = Math.max(0, owner.screenCount - 1);
+    }
+    await owner.save();
+    
+    console.log(`Successfully deleted screen ${screenId} for owner ${ownerId}`);
+    
+    res.json({
+      success: true,
+      data: {
+        message: `Screen ${screenId} deleted successfully from all database collections`,
+        remainingScreens: owner.screenCount,
+        deletedData: {
+          screenLayout: true,
+          shows: true,
+          offlineBookings: true,
+          regularBookings: true,
+          applicationData: true
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Delete screen error:', error);
+    res.status(500).json({ success: false, error: 'Failed to delete screen' });
   }
 });
 
