@@ -191,6 +191,62 @@ class AccountService {
         collection: 'theatreowners',
         database: savedAccount.constructor.db.name
       });
+
+      // Create screen layouts from application data
+      if (application.screens && application.screens.length > 0) {
+        try {
+          const ScreenLayout = require('../models/ScreenLayout');
+          const screenLayouts = [];
+          
+          for (const screen of application.screens) {
+            if (screen.rows && screen.columns) {
+              // Parse aisle columns
+              const aisleColumns = screen.aisleColumns 
+                ? screen.aisleColumns.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n))
+                : [];
+              
+              // Create seat classes from application data
+              const seatClasses = screen.seatClasses ? screen.seatClasses.map(sc => ({
+                className: sc.label,
+                price: parseInt(sc.price) || 200,
+                color: this.getColorForSeatClass(sc.label),
+                tier: this.getTierForSeatClass(sc.label),
+                rows: this.getRowRangeForSeatClass(sc.label, parseInt(screen.rows))
+              })) : [];
+              
+              const screenLayout = new ScreenLayout({
+                screenId: screen.screenNumber.toString(),
+                theatreId: savedAccount._id,
+                screenName: `Screen ${screen.screenNumber}`,
+                meta: {
+                  rows: parseInt(screen.rows),
+                  columns: parseInt(screen.columns),
+                  aisles: aisleColumns
+                },
+                seatClasses: seatClasses,
+                seats: [], // Will be populated when owner configures layout
+                updatedBy: savedAccount._id.toString()
+              });
+              
+              await screenLayout.save();
+              screenLayouts.push(screenLayout);
+              
+              console.log(`✅ Screen layout created for Screen ${screen.screenNumber}:`, {
+                screenId: screen.screenNumber,
+                rows: screen.rows,
+                columns: screen.columns,
+                aisles: aisleColumns,
+                seatClasses: seatClasses.length
+              });
+            }
+          }
+          
+          console.log(`✅ Created ${screenLayouts.length} screen layouts for theatre owner`);
+        } catch (layoutError) {
+          console.error('⚠️ Error creating screen layouts (non-critical):', layoutError);
+          // Don't fail the entire process for layout creation errors
+        }
+      }
       
       return {
         account: savedAccount,
@@ -336,6 +392,63 @@ class AccountService {
     if (score < 3) return 'weak';
     if (score < 5) return 'medium';
     return 'strong';
+  }
+
+  /**
+   * Get color for seat class
+   * @param {string} className - Seat class name
+   * @returns {string} Hex color code
+   */
+  getColorForSeatClass(className) {
+    const colors = {
+      'Gold': '#f59e0b',
+      'Silver': '#9ca3af', 
+      'Balcony': '#22c55e',
+      'Premium': '#8b5cf6',
+      'VIP': '#ef4444'
+    };
+    return colors[className] || '#6b7280';
+  }
+
+  /**
+   * Get tier for seat class
+   * @param {string} className - Seat class name
+   * @returns {string} Tier level
+   */
+  getTierForSeatClass(className) {
+    const tiers = {
+      'Gold': 'Premium',
+      'Silver': 'Base',
+      'Balcony': 'VIP',
+      'Premium': 'Premium',
+      'VIP': 'VIP'
+    };
+    return tiers[className] || 'Base';
+  }
+
+  /**
+   * Get row range for seat class
+   * @param {string} className - Seat class name
+   * @param {number} totalRows - Total number of rows
+   * @returns {string} Row range (e.g., "A-C")
+   */
+  getRowRangeForSeatClass(className, totalRows) {
+    if (totalRows <= 0) return 'A';
+    
+    // Updated distribution: Gold gets more seats (50%), Silver and Balcony get fewer (25% each)
+    const ranges = {
+      'Gold': { start: 0, end: Math.floor(totalRows * 0.5) - 1 },
+      'Silver': { start: Math.floor(totalRows * 0.5), end: Math.floor(totalRows * 0.75) - 1 },
+      'Balcony': { start: Math.floor(totalRows * 0.75), end: totalRows - 1 },
+      'Premium': { start: 0, end: Math.floor(totalRows * 0.5) - 1 }, // Same as Gold
+      'VIP': { start: Math.floor(totalRows * 0.75), end: totalRows - 1 } // Same as Balcony
+    };
+    
+    const range = ranges[className] || { start: 0, end: totalRows - 1 };
+    const startRow = String.fromCharCode('A'.charCodeAt(0) + Math.max(0, range.start));
+    const endRow = String.fromCharCode('A'.charCodeAt(0) + Math.min(totalRows - 1, range.end));
+    
+    return startRow === endRow ? startRow : `${startRow}-${endRow}`;
   }
 }
 

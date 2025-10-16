@@ -19,7 +19,15 @@ const theatreOwnerApplicationSchema = new mongoose.Schema(
       seatLayout: { type: String, required: true },
       baseTicketPrice: { type: String, required: true },
       premiumPrice: { type: String, required: true },
-      vipPrice: { type: String, required: true }
+      vipPrice: { type: String, required: true },
+      // Seat layout configuration
+      rows: { type: String },
+      columns: { type: String },
+      aisleColumns: { type: String }, // comma-separated aisle column numbers
+      seatClasses: [{
+        label: { type: String },
+        price: { type: String }
+      }]
     }],
     internetConnectivity: { type: String, required: true },
 

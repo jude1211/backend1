@@ -270,7 +270,10 @@ router.get('/owner-applications/check-email/:email', async (req, res) => {
 router.get('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res) => {
   try {
     const { ownerId } = req.params;
-    const owner = await require('../models/TheatreOwner').findById(ownerId).lean();
+    const TheatreOwner = require('../models/TheatreOwner');
+    const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
+    
+    const owner = await TheatreOwner.findById(ownerId).lean();
     if (!owner) {
       return res.status(404).json({ success: false, error: 'Theatre owner not found' });
     }
@@ -278,13 +281,64 @@ router.get('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res)
     if (String(req.theatreOwner._id) !== String(ownerId)) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
-    const count = Math.max(1, parseInt(owner.screenCount || 1));
-    const screens = Array.from({ length: count }).map((_, idx) => ({
-      screenNumber: idx + 1,
-      name: `Screen ${idx + 1}`,
-      type: owner.theatreType === 'IMAX' ? 'IMAX' : '2D'
-    }));
-    res.json({ success: true, data: { screenCount: count, screens } });
+
+    // Try to fetch detailed screen data from the theatre owner application
+    let screens = [];
+    if (owner.applicationId) {
+      try {
+        const application = await TheatreOwnerApplication.findById(owner.applicationId).lean();
+        if (application && application.screens && application.screens.length > 0) {
+          // Use detailed screen data from application
+          screens = application.screens.map(screen => ({
+            screenNumber: screen.screenNumber,
+            name: `Screen ${screen.screenNumber}`,
+            type: screen.type || '2D',
+            seatingCapacity: screen.seatingCapacity,
+            seatLayout: screen.seatLayout,
+            baseTicketPrice: screen.baseTicketPrice,
+            premiumPrice: screen.premiumPrice,
+            vipPrice: screen.vipPrice,
+            rows: screen.rows,
+            columns: screen.columns,
+            aisleColumns: screen.aisleColumns,
+            seatClasses: screen.seatClasses || []
+          }));
+        }
+      } catch (appError) {
+        console.warn('Failed to fetch screen data from application:', appError);
+      }
+    }
+
+    // Fallback to basic screen data if no application data found
+    if (screens.length === 0) {
+      const count = Math.max(1, parseInt(owner.screenCount || 1));
+      screens = Array.from({ length: count }).map((_, idx) => ({
+        screenNumber: idx + 1,
+        name: `Screen ${idx + 1}`,
+        type: owner.theatreType === 'IMAX' ? 'IMAX' : '2D',
+        seatingCapacity: '120',
+        seatLayout: 'Standard (Rows A-Z)',
+        baseTicketPrice: '200',
+        premiumPrice: '300',
+        vipPrice: '500',
+        rows: '8',
+        columns: '12',
+        aisleColumns: '5,9',
+        seatClasses: [
+          { label: 'Gold', price: '250' },
+          { label: 'Silver', price: '180' },
+          { label: 'Balcony', price: '320' }
+        ]
+      }));
+    }
+
+    res.json({ 
+      success: true, 
+      data: { 
+        screenCount: screens.length, 
+        screens 
+      } 
+    });
   } catch (error) {
     console.error('Owner screens error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch screens' });
@@ -299,21 +353,126 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
     if (String(req.theatreOwner._id) !== String(ownerId)) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
+    
     const TheatreOwner = require('../models/TheatreOwner');
+    const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
+    
     const owner = await TheatreOwner.findById(ownerId);
     if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
+    
+    // Update screen count
     owner.screenCount = Math.max(0, parseInt(owner.screenCount || 0)) + 1;
     await owner.save();
+    
+    const newScreenNumber = owner.screenCount;
+    
+    // Also add the screen to the theatre owner application if it exists
+    if (owner.applicationId) {
+      try {
+        const application = await TheatreOwnerApplication.findById(owner.applicationId);
+        if (application) {
+          const newScreen = {
+            screenNumber: newScreenNumber,
+            seatingCapacity: '120', // Default capacity
+            seatLayout: 'Standard (Rows A-Z)',
+            baseTicketPrice: '200',
+            premiumPrice: '300',
+            vipPrice: '500',
+            rows: '8', // Default rows
+            columns: '12', // Default columns
+            aisleColumns: '5,9', // Default aisles
+            seatClasses: [
+              { label: 'Gold', price: '250' },
+              { label: 'Silver', price: '180' },
+              { label: 'Balcony', price: '320' }
+            ]
+          };
+          
+          if (!application.screens) {
+            application.screens = [];
+          }
+          application.screens.push(newScreen);
+          await application.save();
+        }
+      } catch (appError) {
+        console.warn('Failed to update application with new screen:', appError);
+        // Don't fail the entire operation for this
+      }
+    }
+    
     const count = owner.screenCount;
     const screens = Array.from({ length: count }).map((_, idx) => ({
       screenNumber: idx + 1,
       name: name && idx + 1 === count ? name : `Screen ${idx + 1}`,
       type
     }));
-    res.status(201).json({ success: true, data: { screenCount: count, screens } });
+    
+    res.status(201).json({ 
+      success: true, 
+      data: { 
+        screenCount: count, 
+        screens,
+        screenNumber: newScreenNumber // Return the new screen number for frontend
+      } 
+    });
   } catch (error) {
     console.error('Add owner screen error:', error);
     res.status(500).json({ success: false, error: 'Failed to add screen' });
+  }
+});
+
+// Theatre Owner: Update screen configuration
+router.put('/owner/:ownerId/screens/:screenNumber', authenticateTheatreOwner, async (req, res) => {
+  try {
+    const { ownerId, screenNumber } = req.params;
+    const { rows, columns, aisleColumns, seatClasses, seatingCapacity } = req.body || {};
+    
+    if (String(req.theatreOwner._id) !== String(ownerId)) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+    
+    const TheatreOwner = require('../models/TheatreOwner');
+    const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
+    
+    const owner = await TheatreOwner.findById(ownerId);
+    if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
+    
+    // Update screen configuration in the application
+    if (owner.applicationId) {
+      try {
+        const application = await TheatreOwnerApplication.findById(owner.applicationId);
+        if (application && application.screens) {
+          const screenIndex = application.screens.findIndex(s => s.screenNumber === parseInt(screenNumber));
+          if (screenIndex !== -1) {
+            // Update the screen configuration
+            if (rows) application.screens[screenIndex].rows = rows;
+            if (columns) application.screens[screenIndex].columns = columns;
+            if (aisleColumns) application.screens[screenIndex].aisleColumns = aisleColumns;
+            if (seatClasses) application.screens[screenIndex].seatClasses = seatClasses;
+            if (seatingCapacity) application.screens[screenIndex].seatingCapacity = seatingCapacity;
+            
+            await application.save();
+            
+            res.json({ 
+              success: true, 
+              data: { 
+                message: 'Screen configuration updated successfully',
+                screen: application.screens[screenIndex]
+              } 
+            });
+            return;
+          }
+        }
+      } catch (appError) {
+        console.error('Failed to update screen configuration:', appError);
+        return res.status(500).json({ success: false, error: 'Failed to update screen configuration' });
+      }
+    }
+    
+    res.status(404).json({ success: false, error: 'Screen not found or no application data' });
+  } catch (error) {
+    console.error('Update screen configuration error:', error);
+    res.status(500).json({ success: false, error: 'Failed to update screen configuration' });
   }
 });
 

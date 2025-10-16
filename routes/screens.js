@@ -40,11 +40,70 @@ router.post('/:id/layout', [
   }
 });
 
+// Update screen seat layout (PUT method as requested)
+router.put('/:id/layout', [
+  body('meta.rows').isInt({ min: 1 }),
+  body('meta.columns').isInt({ min: 1 }),
+  body('meta.aisles').optional().isArray()
+], async (req, res) => {
+  try {
+    const screenId = req.params.id;
+    const payload = req.body;
+    console.log('Update layout payload:', JSON.stringify({ screenId, seatsLen: Array.isArray(payload?.seats) ? payload.seats.length : 0 }, null, 2));
+    
+    const doc = await ScreenLayout.findOneAndUpdate(
+      { screenId },
+      {
+        $set: {
+          screenId,
+          theatreId: payload.theatreId ?? undefined,
+          screenName: payload.screenName ?? undefined,
+          meta: payload.meta,
+          seatClasses: payload.seatClasses ?? [],
+          seats: Array.isArray(payload.seats) ? payload.seats : [], // replace FULL seats array
+          updatedBy: payload.updatedBy ?? undefined,
+          updatedAt: new Date()
+        }
+      },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+    
+    console.log('Layout updated successfully:', {
+      screenId: doc.screenId,
+      seatsCount: doc.seats?.length || 0,
+      updatedAt: doc.updatedAt
+    });
+    
+    res.json({ success: true, data: doc });
+  } catch (error) {
+    console.error('Update screen layout error:', error);
+    res.status(500).json({ success: false, error: 'Failed to update layout' });
+  }
+});
+
 // Get screen seat layout
 router.get('/:id/layout', async (req, res) => {
   try {
     const screenId = req.params.id;
+    console.log('Fetching layout for screenId:', screenId);
+    
+    // Set cache control headers to prevent caching
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'Surrogate-Control': 'no-store'
+    });
+    
     const doc = await ScreenLayout.findOne({ screenId });
+    console.log('Found layout document:', doc ? {
+      screenId: doc.screenId,
+      seatsCount: doc.seats?.length || 0,
+      meta: doc.meta,
+      seatClasses: doc.seatClasses?.length || 0,
+      updatedAt: doc.updatedAt
+    } : 'No document found');
+    
     res.json({ success: true, data: doc });
   } catch (error) {
     console.error('Get screen layout error:', error);

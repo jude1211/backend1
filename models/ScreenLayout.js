@@ -8,6 +8,7 @@ const SeatSchema = new mongoose.Schema({
   className: { type: String, required: true },
   price: { type: Number, required: true },
   color: { type: String },
+  tier: { type: String, enum: ['Base', 'Premium', 'VIP'], default: 'Base' }, // Seat tier for organization
   status: { type: String, enum: ['available', 'booked', 'blocked', 'deleted'], default: 'available' },
   isActive: { type: Boolean, default: true }, // false when seat is deleted
   originalRow: { type: String }, // Original row before any moves

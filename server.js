@@ -16,6 +16,7 @@ const theatreRoutes = require('./routes/theatres');
 const theatreOwnerAuthRoutes = require('./routes/theatreOwnerAuth');
 const offlineBookingRoutes = require('./routes/offlineBookings');
 const screenRoutes = require('./routes/screens');
+const showTimingRoutes = require('./routes/showTimings');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -54,7 +55,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Cache-Control', 'Pragma', 'Expires']
 };
 
 app.use(cors(corsOptions));
@@ -108,6 +109,7 @@ app.use(`/api/${apiVersion}/theatres`, theatreRoutes);
 app.use(`/api/${apiVersion}/theatre-owner`, theatreOwnerAuthRoutes);
 app.use(`/api/${apiVersion}/offline-bookings`, offlineBookingRoutes);
 app.use(`/api/${apiVersion}/screens`, screenRoutes);
+app.use(`/api/${apiVersion}/show-timings`, showTimingRoutes);
 app.use(`/api/${apiVersion}/seat-layout`, seatLayoutRoutes);
 app.use(`/api/${apiVersion}/shows`, showSeatLayoutRoutes);
 app.use(`/api/${apiVersion}/admin`, adminRoutes);
