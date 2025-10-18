@@ -1,10 +1,12 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const mongoose = require('mongoose');
 const ScreenLayout = require('../models/ScreenLayout');
 const Booking = require('../models/Booking');
 const ScreenShow = require('../models/ScreenShow');
 const Theatre = require('../models/Theatre');
 const { authenticateUser } = require('../middleware/auth');
+const emailService = require('../services/emailService');
 
 const router = express.Router();
 
@@ -13,6 +15,15 @@ const router = express.Router();
 router.get('/:screenId/:bookingDate/:showtime', async (req, res) => {
   try {
     const { screenId, bookingDate, showtime } = req.params;
+
+    // Check if the booking date is in the past
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    if (bookingDate < today) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Cannot access seat layout for past dates' 
+      });
+    }
 
     // 1. Get the screen layout
     const layout = await ScreenLayout.findOne({ screenId });
@@ -32,7 +43,21 @@ router.get('/:screenId/:bookingDate/:showtime', async (req, res) => {
     const bookedSeats = new Set();
     bookings.forEach(b => {
       (b.seats || []).forEach(seat => {
-        bookedSeats.add(`${seat.row}-${seat.seatNumber || seat.number || seat.seat}`);
+        const seatNumber = seat.seatNumber || seat.number || seat.seat;
+        if (seatNumber) {
+          // Convert seat number format to match frontend expectations
+          if (seatNumber.match(/^[A-Z]\d+$/)) {
+            // Format: A1 -> A-1
+            const row = seatNumber.charAt(0);
+            const number = seatNumber.substring(1);
+            bookedSeats.add(`${row}-${number}`);
+          } else if (seat.row && seatNumber) {
+            // Use row and seatNumber separately
+            bookedSeats.add(`${seat.row}-${seatNumber}`);
+          } else {
+            bookedSeats.add(seatNumber);
+          }
+        }
       });
     });
 
@@ -58,7 +83,89 @@ router.get('/:screenId/:bookingDate/:showtime', async (req, res) => {
   }
 });
 
-module.exports = router;
+// GET /api/seat-layout/:screenId/:bookingDate/:showtime/live
+// Returns live seat layout for polling (same as above but with /live suffix)
+router.get('/:screenId/:bookingDate/:showtime/live', async (req, res) => {
+  try {
+    const { screenId, bookingDate, showtime } = req.params;
+
+    // Check if the booking date is in the past
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    if (bookingDate < today) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Cannot access seat layout for past dates' 
+      });
+    }
+
+    // 1. Get the screen layout
+    const layout = await ScreenLayout.findOne({ screenId });
+    if (!layout) {
+      return res.status(404).json({ success: false, error: 'Screen layout not found' });
+    }
+
+    // 2. Find all bookings for this show (by screen, date, and showtime)
+    const bookings = await Booking.find({
+      'theatre.screen.screenNumber': Number(screenId),
+      'showtime.date': new Date(bookingDate),
+      'showtime.time': showtime,
+      status: 'confirmed'
+    });
+
+    // 3. Build a map of reserved seats
+    const reservedSeats = new Set();
+    bookings.forEach(booking => {
+      if (booking.seats && Array.isArray(booking.seats)) {
+        booking.seats.forEach(seat => {
+          if (seat.seatNumber) {
+            // Convert seat number format from "A1" to "A-1" to match frontend expectations
+            const seatNumber = seat.seatNumber;
+            if (seatNumber.match(/^[A-Z]\d+$/)) {
+              // Format: A1 -> A-1
+              const row = seatNumber.charAt(0);
+              const number = seatNumber.substring(1);
+              reservedSeats.add(`${row}-${number}`);
+            } else {
+              // Keep original format if it doesn't match expected pattern
+              reservedSeats.add(seatNumber);
+            }
+          }
+        });
+      }
+    });
+
+    // 4. Process the layout to mark seats as reserved
+    const processedSeats = {};
+    if (layout.seats) {
+      Object.keys(layout.seats).forEach(seatKey => {
+        const seat = layout.seats[seatKey];
+        processedSeats[seatKey] = {
+          ...seat,
+          isReserved: reservedSeats.has(seatKey),
+          status: reservedSeats.has(seatKey) ? 'reserved' : 'available'
+        };
+      });
+    }
+
+    // 5. Return the live layout
+    res.json({
+      success: true,
+      data: {
+        screenId: layout.screenId,
+        config: layout.config,
+        seats: processedSeats,
+        reservedSeats: Array.from(reservedSeats),
+        totalSeats: Object.keys(layout.seats || {}).length,
+        availableSeats: Object.keys(layout.seats || {}).length - reservedSeats.size,
+        lastUpdated: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Get live seat layout error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch live seat layout' });
+  }
+});
 
 // POST /api/seat-layout/:screenId/:bookingDate/:showtime/book
 // Atomically validate and create a confirmed booking; returns updated booking
@@ -69,39 +176,83 @@ router.post(
     body('seats').isArray({ min: 1 }).withMessage('At least one seat is required'),
     body('seats.*.rowLabel').notEmpty().withMessage('rowLabel is required'),
     body('seats.*.number').isNumeric().withMessage('number is required'),
-    body('seats.*.price').isNumeric().withMessage('price is required')
+    body('seats.*.price').isNumeric().withMessage('price is required'),
+    body('contactDetails.email').isEmail().withMessage('Valid email is required'),
+    body('contactDetails.mobileNumber').isLength({ min: 10, max: 10 }).withMessage('Valid 10-digit mobile number is required'),
+    body('contactDetails.countryCode').notEmpty().withMessage('Country code is required')
   ],
   async (req, res) => {
     try {
+      console.log('Booking request received:', {
+        params: req.params,
+        body: req.body,
+        user: req.user ? { id: req.user._id, firebaseUid: req.user.firebaseUid } : 'No user'
+      });
+
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
+        console.log('Validation errors:', errors.array());
         return res.status(400).json({ success: false, error: 'Validation failed', details: errors.array() });
       }
 
       const { screenId, bookingDate, showtime } = req.params;
+      
+      // Check if the booking date is in the past
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+      if (bookingDate < today) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Cannot book seats for past dates' 
+        });
+      }
+      
+      // Decode URL-encoded showtime
+      const decodedShowtime = decodeURIComponent(showtime);
+      console.log('Decoded showtime:', decodedShowtime);
       const requestedSeats = Array.isArray(req.body.seats) ? req.body.seats : [];
+      const { contactDetails } = req.body;
+
+      console.log('Processing booking for:', { screenId, bookingDate, showtime, seatCount: requestedSeats.length });
+
+      // Check if user is authenticated
+      if (!req.user || !req.user._id) {
+        console.log('No authenticated user found');
+        return res.status(401).json({ success: false, error: 'User authentication required' });
+      }
 
       // Load persisted layout and theatre
       const layout = await ScreenLayout.findOne({ screenId });
       if (!layout) return res.status(404).json({ success: false, error: 'Screen layout not found' });
 
       // Identify show/movie
-      const show = await ScreenShow.findOne({ screenId, bookingDate, showtimes: showtime }).populate('movieId', 'title posterUrl duration');
+      const show = await ScreenShow.findOne({ screenId, bookingDate, showtimes: decodedShowtime }).populate('movieId', 'title posterUrl duration');
 
       // Check live availability by querying existing confirmed bookings for this show
       const liveBookings = await Booking.find({
         'theatre.screen.screenNumber': Number(screenId),
         'showtime.date': new Date(bookingDate),
-        'showtime.time': showtime,
-        status: 'Confirmed'
+        'showtime.time': decodedShowtime,
+        status: 'confirmed'
       }).lean();
       const bookedSet = new Set();
-      liveBookings.forEach(b => (b.seats || []).forEach(s => bookedSet.add(String(s.seatNumber))));
+      liveBookings.forEach(b => {
+        (b.seats || []).forEach(s => {
+          const seatNumber = String(s.seatNumber);
+          // Convert stored format to frontend format for comparison
+          if (seatNumber.match(/^[A-Z]\d+$/)) {
+            const row = seatNumber.charAt(0);
+            const number = seatNumber.substring(1);
+            bookedSet.add(`${row}-${number}`);
+          } else {
+            bookedSet.add(seatNumber);
+          }
+        });
+      });
 
       // Validate no requested seat is already booked
       const conflicts = [];
       for (const s of requestedSeats) {
-        const key = `${s.rowLabel}${s.number}`;
+        const key = `${s.rowLabel}-${s.number}`; // Use frontend format for comparison
         if (bookedSet.has(key)) conflicts.push(key);
       }
       if (conflicts.length) {
@@ -109,7 +260,50 @@ router.post(
       }
 
       // Build booking document
-      const theatreDoc = layout.theatreId ? await Theatre.findById(layout.theatreId).lean() : null;
+      let theatreDoc = null;
+      let theatreName = 'Theatre';
+      
+      if (layout.theatreId) {
+        try {
+          theatreDoc = await Theatre.findById(layout.theatreId).lean();
+          if (theatreDoc) {
+            theatreName = theatreDoc.name || 'Theatre';
+          }
+        } catch (error) {
+          console.error('Error fetching theatre:', error);
+        }
+      }
+      
+      // If no theatre found, try to get theatre name from the show
+      if (!theatreDoc && show?.theatreId) {
+        try {
+          const showTheatre = await Theatre.findById(show.theatreId).lean();
+          if (showTheatre) {
+            theatreName = showTheatre.name || 'Theatre';
+            theatreDoc = showTheatre;
+          }
+        } catch (error) {
+          console.error('Error fetching show theatre:', error);
+        }
+      }
+      
+      // If theatre name is still default, try to get from TheatreOwner collection
+      if (!theatreName || theatreName === 'Theatre' || theatreName === 'Default Theatre') {
+        try {
+          const TheatreOwner = require('../models/TheatreOwner');
+          const theatreOwner = await TheatreOwner.findOne({
+            isActive: true
+          }).select('theatreName').lean();
+          
+          if (theatreOwner && theatreOwner.theatreName) {
+            console.log('Using theatre name from TheatreOwner:', theatreOwner.theatreName);
+            theatreName = theatreOwner.theatreName;
+          }
+        } catch (error) {
+          console.error('Error fetching theatre from TheatreOwner:', error);
+        }
+      }
+      
       const bookingId = `BNV-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
       const seatsPayload = requestedSeats.map(s => ({
         seatNumber: `${s.rowLabel}${s.number}`,
@@ -129,32 +323,101 @@ router.post(
           poster: show?.movieId?.posterUrl || '',
         },
         theatre: {
-          theatreId: theatreDoc?._id || undefined,
-          name: theatreDoc?.name || 'Theatre',
+          theatreId: theatreDoc?._id || new mongoose.Types.ObjectId(),
+          name: theatreName,
           screen: { screenNumber: Number(screenId), screenType: '2D' }
         },
         showtime: {
           date: new Date(bookingDate),
-          time: showtime,
+          time: decodedShowtime,
           showId: show?._id ? String(show._id) : undefined
         },
         seats: seatsPayload,
-        pricing: {
-          currency: 'INR',
-          totalAmount
+        contactInfo: {
+          email: contactDetails?.email || '',
+          phone: `${contactDetails?.countryCode || '+91'}${contactDetails?.mobileNumber || ''}`,
+          name: contactDetails?.email?.split('@')[0] || 'Customer'
         },
-        payment: { method: 'upi', status: 'paid', transactionId: bookingId },
-        status: 'Confirmed'
+        pricing: {
+          seatTotal: totalAmount,
+          snackTotal: 0,
+          subtotal: totalAmount,
+          taxes: {
+            cgst: totalAmount * 0.09,
+            sgst: totalAmount * 0.09,
+            serviceFee: totalAmount * 0.02,
+            convenienceFee: 20
+          },
+          discount: {
+            amount: 0
+          },
+          totalAmount: totalAmount + (totalAmount * 0.20) + 20
+        },
+        payment: { method: 'upi', status: 'completed', transactionId: bookingId },
+        status: 'confirmed'
       });
 
+      // Generate QR codes for tickets
+      if (booking.seats.length > 0 && booking.tickets.length === 0) {
+        booking.tickets = booking.seats.map((seat, index) => ({
+          ticketNumber: `${booking.bookingId}-${index + 1}`,
+          qrCode: `${booking.bookingId}-${seat.seatNumber}`,
+          downloadUrl: null,
+          isUsed: false
+        }));
+      }
+
       // Persist
+      console.log('Saving booking with ID:', booking.bookingId);
       await booking.save();
+      console.log('Booking saved successfully with ID:', booking.bookingId);
+
+      // Emit real-time update to all clients viewing this show
+      const io = req.app.get('io');
+      if (io) {
+        const roomName = `show-${screenId}-${bookingDate}-${decodedShowtime}`;
+        const updatedSeats = seatsPayload.map(seat => ({
+          seatNumber: seat.seatNumber,
+          status: 'reserved',
+          bookingId: bookingId
+        }));
+        
+        io.to(roomName).emit('seats-updated', {
+          screenId,
+          bookingDate,
+          showtime: decodedShowtime,
+          reservedSeats: updatedSeats,
+          bookingId: bookingId,
+          timestamp: new Date().toISOString()
+        });
+        
+        console.log(`📡 Emitted seat update to room: ${roomName}`);
+      }
+
+      // Send booking confirmation email
+      try {
+        console.log('📧 Sending booking confirmation email to:', contactDetails?.email);
+        const emailResult = await emailService.sendBookingConfirmationEmail(booking.toObject());
+        
+        if (emailResult.success) {
+          console.log('✅ Booking confirmation email sent successfully');
+        } else {
+          console.log('⚠️ Booking confirmation email failed:', emailResult.message);
+          // Don't fail the booking if email fails
+        }
+      } catch (emailError) {
+        console.error('❌ Error sending booking confirmation email:', emailError);
+        // Don't fail the booking if email fails
+      }
 
       // Respond
       res.json({ success: true, data: { bookingId, totalAmount, currency: 'INR' } });
     } catch (error) {
       console.error('Create seat booking error:', error);
-      res.status(500).json({ success: false, error: 'Failed to create booking' });
+      console.error('Error stack:', error.stack);
+      res.status(500).json({ success: false, error: 'Failed to create booking', details: error.message });
     }
   }
 );
+
+module.exports = router;

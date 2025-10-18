@@ -496,15 +496,63 @@ router.get('/:movieId/showtimes', [
     const { city = 'Mumbai', date, theatreId } = req.query;
     const movieId = req.params.movieId;
 
+    // Get today's date for filtering
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    
     // Find all active shows for this movie
     const shows = await ScreenShow.find({ movieId, status: 'Active' })
       .populate('theatreId', 'name location')
       .populate('screenId', 'screenNumber screenType')
       .lean();
 
-    // Group by screen and date
+    // Group by screen and date, filtering out past dates and times
     const screens = {};
     for (const show of shows) {
+      // Skip shows with past dates
+      if (show.bookingDate < today) {
+        continue;
+      }
+      
+      // For today's shows, filter out past showtimes
+      let validShowtimes = show.showtimes || [];
+      if (show.bookingDate === today) {
+        const now = new Date();
+        validShowtimes = validShowtimes.filter(showtime => {
+          try {
+            // Parse showtime (e.g., "2:30 PM")
+            const timeMatch = showtime.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+            if (!timeMatch) return false;
+            
+            let hours = parseInt(timeMatch[1], 10);
+            const minutes = parseInt(timeMatch[2], 10);
+            const period = timeMatch[3].toUpperCase();
+            
+            // Convert to 24-hour format
+            if (period === 'PM' && hours !== 12) {
+              hours += 12;
+            } else if (period === 'AM' && hours === 12) {
+              hours = 0;
+            }
+            
+            // Create show datetime
+            const [year, month, day] = show.bookingDate.split('-').map(Number);
+            const showDateTime = new Date(year, month - 1, day, hours, minutes);
+            
+            // Check if showtime is at least 30 minutes in the future
+            const timeUntilShow = Math.floor((showDateTime.getTime() - now.getTime()) / (1000 * 60));
+            return timeUntilShow > 30;
+          } catch (error) {
+            console.error('Error parsing showtime:', showtime, error);
+            return false;
+          }
+        });
+      }
+      
+      // Skip shows with no valid showtimes
+      if (validShowtimes.length === 0) {
+        continue;
+      }
+      
       const screenKey = String(show.screenId?._id || show.screenId);
       if (!screens[screenKey]) {
         screens[screenKey] = {
@@ -516,7 +564,7 @@ router.get('/:movieId/showtimes', [
       }
       screens[screenKey].showGroups.push({
         bookingDate: show.bookingDate,
-        showtimes: show.showtimes || [],
+        showtimes: validShowtimes,
         theatre: show.theatreId?.name || '',
         theatreId: show.theatreId?._id || show.theatreId,
         availableSeats: show.availableSeats || 0

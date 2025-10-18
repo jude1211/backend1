@@ -5,6 +5,8 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
+const http = require('http');
+const { Server } = require('socket.io');
 require('dotenv').config();
 
 // Import routes
@@ -21,6 +23,9 @@ const showTimingRoutes = require('./routes/showTimings');
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
 const { initializeFirebase } = require('./config/firebase');
+
+// Import cleanup script
+const { cleanupPastShows } = require('./scripts/cleanupPastShows');
 
 const app = express();
 
@@ -64,12 +69,54 @@ app.options('*', cors(corsOptions));
 // Rate limiting (after CORS so preflight gets proper headers)
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // limit each IP to 100 requests per windowMs
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000, // limit each IP to 1000 requests per windowMs
+  message: {
+    error: 'Too many requests from this IP, please try again later.'
+  },
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  // Skip rate limiting for certain endpoints
+  skip: (req) => {
+    // Skip rate limiting for health checks
+    if (req.path === '/health') return true;
+    return false;
+  }
+});
+
+// Apply different rate limits for different endpoints
+const strictLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 50, // More restrictive for booking operations
+  message: {
+    error: 'Too many booking requests from this IP, please try again later.'
+  }
+});
+
+const seatLayoutLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 30, // 30 requests per minute for seat layout (more lenient for real-time updates)
+  message: {
+    error: 'Too many seat layout requests from this IP, please try again later.'
+  }
+});
+
+const moderateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200, // Moderate for data fetching
   message: {
     error: 'Too many requests from this IP, please try again later.'
   }
 });
+
+// Apply rate limiting
 app.use('/api/', limiter);
+// Apply stricter limits to booking endpoints
+app.use('/api/v1/bookings', strictLimiter);
+// Apply specific limits to seat layout endpoints (more lenient for real-time updates)
+app.use('/api/v1/seat-layout', seatLayoutLimiter);
+// Apply moderate limits to data endpoints
+app.use('/api/v1/movies', moderateLimiter);
+app.use('/api/v1/theatres', moderateLimiter);
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -158,11 +205,52 @@ const startServer = async () => {
   try {
     await connectDB();
     
-    const server = app.listen(PORT, () => {
+    // Create HTTP server
+    const server = http.createServer(app);
+    
+    // Initialize Socket.IO
+    const io = new Server(server, {
+      cors: {
+        origin: process.env.FRONTEND_URL || "http://localhost:5173",
+        methods: ["GET", "POST"],
+        credentials: true
+      }
+    });
+
+    // Socket.IO connection handling
+    io.on('connection', (socket) => {
+      console.log(`🔌 Client connected: ${socket.id}`);
+      
+      // Join room for specific screen/show
+      socket.on('join-show', (data) => {
+        const { screenId, bookingDate, showtime } = data;
+        const roomName = `show-${screenId}-${bookingDate}-${showtime}`;
+        socket.join(roomName);
+        console.log(`📺 Client ${socket.id} joined room: ${roomName}`);
+      });
+
+      // Leave room
+      socket.on('leave-show', (data) => {
+        const { screenId, bookingDate, showtime } = data;
+        const roomName = `show-${screenId}-${bookingDate}-${showtime}`;
+        socket.leave(roomName);
+        console.log(`📺 Client ${socket.id} left room: ${roomName}`);
+      });
+
+      socket.on('disconnect', () => {
+        console.log(`🔌 Client disconnected: ${socket.id}`);
+      });
+    });
+
+    // Make io available globally
+    app.set('io', io);
+    
+    server.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📱 Environment: ${process.env.NODE_ENV}`);
       console.log(`🔗 API Base URL: http://localhost:${PORT}/api/${apiVersion}`);
       console.log(`💾 MongoDB: ${process.env.MONGODB_URI}`);
+      console.log(`🔌 Socket.IO server initialized`);
     });
 
     // Graceful shutdown
@@ -183,6 +271,32 @@ const startServer = async () => {
 // Only start server if this file is run directly
 if (require.main === module) {
   startServer();
+  
+  // Schedule cleanup job to run daily at 2 AM
+  const scheduleCleanup = () => {
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(2, 0, 0, 0); // 2:00 AM
+    
+    const msUntilCleanup = tomorrow.getTime() - now.getTime();
+    
+    setTimeout(() => {
+      console.log('Running scheduled cleanup of past shows...');
+      cleanupPastShows();
+      
+      // Schedule next cleanup (24 hours later)
+      setInterval(() => {
+        console.log('Running scheduled cleanup of past shows...');
+        cleanupPastShows();
+      }, 24 * 60 * 60 * 1000); // 24 hours
+    }, msUntilCleanup);
+    
+    console.log(`Cleanup job scheduled to run at ${tomorrow.toISOString()}`);
+  };
+  
+  // Start cleanup scheduler
+  scheduleCleanup();
 }
 
 module.exports = app;

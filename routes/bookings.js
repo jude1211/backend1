@@ -1,17 +1,17 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const mongoose = require('mongoose');
 const Booking = require('../models/Booking');
 const User = require('../models/User');
 const Theatre = require('../models/Theatre');
+const TheatreOwner = require('../models/TheatreOwner');
 const { authenticateUser, requireOwnership } = require('../middleware/auth');
+const emailService = require('../services/emailService');
 
 const router = express.Router();
-
-// Apply authentication to all routes
-router.use(authenticateUser);
  
 // Create new booking
-router.post('/', [
+router.post('/', authenticateUser, [
   body('movie.movieId').notEmpty().withMessage('Movie ID is required'),
   body('movie.title').notEmpty().withMessage('Movie title is required'),
   body('theatre.theatreId').isMongoId().withMessage('Valid theatre ID is required'),
@@ -59,6 +59,22 @@ router.post('/', [
     // Populate theatre information
     await booking.populate('theatre.theatreId', 'name location contact');
 
+    // Send booking confirmation email
+    try {
+      console.log('📧 Sending booking confirmation email to:', booking.contactInfo?.email);
+      const emailResult = await emailService.sendBookingConfirmationEmail(booking.toObject());
+      
+      if (emailResult.success) {
+        console.log('✅ Booking confirmation email sent successfully');
+      } else {
+        console.log('⚠️ Booking confirmation email failed:', emailResult.message);
+        // Don't fail the booking if email fails
+      }
+    } catch (emailError) {
+      console.error('❌ Error sending booking confirmation email:', emailError);
+      // Don't fail the booking if email fails
+    }
+
     res.status(201).json({
       success: true,
       message: 'Booking created successfully',
@@ -74,7 +90,7 @@ router.post('/', [
 });
 
 // Get user's bookings
-router.get('/', async (req, res) => {
+router.get('/', authenticateUser, async (req, res) => {
   try {
     const { 
       status, 
@@ -129,46 +145,106 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Get specific booking
+// Get specific booking (public access for confirmation)
 router.get('/:bookingId', async (req, res) => {
   try {
-    const booking = await Booking.findOne({
+    console.log('Fetching booking with ID:', req.params.bookingId);
+    
+    // First, try to find the booking without population
+    let booking = await Booking.findOne({
       $or: [
         { bookingId: req.params.bookingId },
-        { _id: req.params.bookingId }
-      ],
-      firebaseUid: req.user.firebaseUid
-    }).populate('theatre.theatreId', 'name location contact amenities');
+        ...(mongoose.Types.ObjectId.isValid(req.params.bookingId) 
+          ? [{ _id: req.params.bookingId }] 
+          : [])
+      ]
+    });
 
+    console.log('Booking found:', booking ? 'Yes' : 'No');
+    
     if (!booking) {
+      console.log('Booking not found for ID:', req.params.bookingId);
       return res.status(404).json({
         success: false,
         error: 'Booking not found'
       });
     }
 
+    // Try to populate theatre information if it exists
+    if (booking.theatre && booking.theatre.theatreId) {
+      try {
+        const theatreObjectId = mongoose.Types.ObjectId.isValid(booking.theatre.theatreId) 
+          ? booking.theatre.theatreId 
+          : new mongoose.Types.ObjectId(booking.theatre.theatreId);
+        
+        // First try to get theatre from Theatre collection
+        const theatre = await Theatre.findById(theatreObjectId).select('name location contact amenities');
+        if (theatre) {
+          booking.theatre.theatreId = theatre;
+          // Use theatre name from Theatre collection if available
+          if (theatre.name && theatre.name !== 'Default Theatre') {
+            booking.theatre.name = theatre.name;
+          }
+        }
+        
+        // If theatre name is still default or not found, try TheatreOwner collection
+        if (!booking.theatre.name || booking.theatre.name === 'Default Theatre' || booking.theatre.name === 'Theatre') {
+          try {
+            // Try to find theatre owner by theatre name or other criteria
+            const theatreOwner = await TheatreOwner.findOne({
+              $or: [
+                { theatreName: { $regex: booking.theatre.name, $options: 'i' } },
+                { _id: theatreObjectId }
+              ],
+              isActive: true
+            }).select('theatreName location ownerName');
+            
+            if (theatreOwner && theatreOwner.theatreName) {
+              console.log('Found theatre name from TheatreOwner:', theatreOwner.theatreName);
+              booking.theatre.name = theatreOwner.theatreName;
+            }
+          } catch (ownerError) {
+            console.log('TheatreOwner lookup failed:', ownerError.message);
+          }
+        }
+      } catch (populateError) {
+        console.log('Theatre population failed:', populateError.message);
+        // Continue without theatre population
+      }
+    }
+
+    console.log('Returning booking data for:', booking.bookingId);
     res.json({
       success: true,
       data: booking
     });
   } catch (error) {
     console.error('Get booking error:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Error name:', error.name);
+    console.error('Error code:', error.code);
+    console.error('Error message:', error.message);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch booking'
+      error: 'Failed to fetch booking',
+      details: error.message,
+      errorName: error.name,
+      errorCode: error.code
     });
   }
 });
 
 // Cancel booking
-router.patch('/:bookingId/cancel', [
+router.patch('/:bookingId/cancel', authenticateUser, [
   body('reason').optional().trim().isLength({ max: 500 })
 ], async (req, res) => {
   try {
     const booking = await Booking.findOne({
       $or: [
         { bookingId: req.params.bookingId },
-        { _id: req.params.bookingId }
+        ...(mongoose.Types.ObjectId.isValid(req.params.bookingId) 
+          ? [{ _id: req.params.bookingId }] 
+          : [])
       ],
       firebaseUid: req.user.firebaseUid
     });
@@ -238,7 +314,7 @@ router.patch('/:bookingId/cancel', [
 });
 
 // Add review for booking
-router.post('/:bookingId/review', [
+router.post('/:bookingId/review', authenticateUser, [
   body('movieRating').isInt({ min: 1, max: 5 }).withMessage('Movie rating must be between 1 and 5'),
   body('theatreRating').optional().isInt({ min: 1, max: 5 }).withMessage('Theatre rating must be between 1 and 5'),
   body('comment').optional().trim().isLength({ max: 1000 }).withMessage('Comment must be less than 1000 characters')
@@ -256,7 +332,9 @@ router.post('/:bookingId/review', [
     const booking = await Booking.findOne({
       $or: [
         { bookingId: req.params.bookingId },
-        { _id: req.params.bookingId }
+        ...(mongoose.Types.ObjectId.isValid(req.params.bookingId) 
+          ? [{ _id: req.params.bookingId }] 
+          : [])
       ],
       firebaseUid: req.user.firebaseUid
     });
@@ -309,7 +387,7 @@ router.post('/:bookingId/review', [
 });
 
 // Get booking statistics
-router.get('/stats/summary', async (req, res) => {
+router.get('/stats/summary', authenticateUser, async (req, res) => {
   try {
     const stats = await Booking.aggregate([
       { $match: { firebaseUid: req.user.firebaseUid } },
@@ -388,7 +466,7 @@ router.get('/stats/summary', async (req, res) => {
 });
 
 // Download booking ticket (placeholder)
-router.get('/:bookingId/ticket', async (req, res) => {
+router.get('/:bookingId/ticket', authenticateUser, async (req, res) => {
   try {
     const booking = await Booking.findOne({
       $or: [

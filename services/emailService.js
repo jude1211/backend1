@@ -428,6 +428,181 @@ class EmailService {
 
     return await this.sendEmail(applicationData.email, subject, html);
   }
+
+  async sendBookingConfirmationEmail(bookingData) {
+    const subject = '🎬 Your Movie Tickets are Confirmed!';
+
+    const formatDate = (date) => {
+      return new Date(date).toLocaleDateString('en-IN', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+    };
+
+    const formatTime = (time) => {
+      return time; // Already in readable format like "2:30 PM"
+    };
+
+    const seatsList = bookingData.seats.map(seat => 
+      `${seat.row}${seat.number} (₹${seat.price})`
+    ).join(', ');
+
+    const totalAmount = bookingData.pricing?.totalAmount || bookingData.seats.reduce((sum, seat) => sum + seat.price, 0);
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Booking Confirmation</title>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+          .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+          .ticket-box { background: #fff; border: 2px solid #667eea; border-radius: 8px; padding: 20px; margin: 20px 0; }
+          .movie-info { display: flex; align-items: center; margin: 20px 0; }
+          .movie-poster { width: 80px; height: 120px; object-fit: cover; border-radius: 8px; margin-right: 20px; }
+          .movie-details h3 { margin: 0 0 10px 0; color: #333; }
+          .movie-details p { margin: 5px 0; color: #666; }
+          .booking-details { background: #f0f4ff; padding: 15px; border-radius: 8px; margin: 15px 0; }
+          .detail-row { display: flex; justify-content: space-between; margin: 8px 0; }
+          .detail-label { font-weight: bold; color: #333; }
+          .detail-value { color: #666; }
+          .seats-list { background: #e8f2ff; padding: 15px; border-radius: 8px; margin: 15px 0; }
+          .qr-code { text-align: center; margin: 20px 0; }
+          .qr-placeholder { background: #f0f0f0; border: 2px dashed #ccc; padding: 20px; border-radius: 8px; color: #666; }
+          .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+          .important { background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 15px; border-radius: 5px; margin: 20px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>🎬 Booking Confirmed!</h1>
+            <h2>Your Movie Tickets are Ready</h2>
+          </div>
+
+          <div class="content">
+            <p>Dear <strong>${bookingData.contactInfo?.name || 'Valued Customer'}</strong>,</p>
+
+            <p>Thank you for choosing BookNView! Your movie ticket booking has been confirmed successfully.</p>
+
+            <div class="ticket-box">
+              <h3>🎫 Booking Details</h3>
+              
+              <div class="movie-info">
+                ${bookingData.movie?.poster ? `<img src="${bookingData.movie.poster}" alt="${bookingData.movie.title}" class="movie-poster">` : ''}
+                <div class="movie-details">
+                  <h3>${bookingData.movie?.title || 'Movie'}</h3>
+                  <p><strong>Duration:</strong> ${bookingData.movie?.duration || 'N/A'}</p>
+                  <p><strong>Language:</strong> ${bookingData.movie?.language || 'English'}</p>
+                </div>
+              </div>
+
+              <div class="booking-details">
+                <div class="detail-row">
+                  <span class="detail-label">Booking ID:</span>
+                  <span class="detail-value">${bookingData.bookingId}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Theatre:</span>
+                  <span class="detail-value">${bookingData.theatre?.name || 'Theatre'}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Screen:</span>
+                  <span class="detail-value">Screen ${bookingData.theatre?.screen?.screenNumber || 'N/A'} (${bookingData.theatre?.screen?.screenType || '2D'})</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Date:</span>
+                  <span class="detail-value">${formatDate(bookingData.showtime?.date)}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Show Time:</span>
+                  <span class="detail-value">${formatTime(bookingData.showtime?.time)}</span>
+                </div>
+              </div>
+
+              <div class="seats-list">
+                <h4>🎫 Selected Seats:</h4>
+                <p><strong>${seatsList}</strong></p>
+                <p><strong>Total Amount: ₹${totalAmount}</strong></p>
+              </div>
+
+              <div class="qr-code">
+                <h4>📱 Your QR Code:</h4>
+                <div class="qr-placeholder">
+                  <p>QR Code: ${bookingData.bookingId}</p>
+                  <p><small>Show this at the theatre entrance</small></p>
+                </div>
+              </div>
+            </div>
+
+            <div class="important">
+              <strong>⚠️ Important Instructions:</strong><br>
+              • Please arrive at the theatre at least 15 minutes before showtime<br>
+              • Bring a valid ID and this booking confirmation<br>
+              • Show the QR code at the entrance for easy entry<br>
+              • Seats are non-refundable and non-transferable<br>
+              • In case of any issues, contact the theatre directly
+            </div>
+
+            <h3>🎬 Enjoy Your Movie!</h3>
+            <p>We hope you have a wonderful time watching <strong>${bookingData.movie?.title || 'the movie'}</strong>!</p>
+
+            <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
+
+            <p>Thank you for choosing BookNView!</p>
+
+            <p>Best regards,<br>
+            <strong>The BookNView Team</strong></p>
+          </div>
+
+          <div class="footer">
+            <p>This is an automated email. Please do not reply to this email.</p>
+            <p>© 2024 BookNView. All rights reserved.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const text = `
+      Booking Confirmation - ${bookingData.movie?.title || 'Movie'}
+
+      Dear ${bookingData.contactInfo?.name || 'Valued Customer'},
+
+      Thank you for choosing BookNView! Your movie ticket booking has been confirmed successfully.
+
+      Booking Details:
+      Booking ID: ${bookingData.bookingId}
+      Movie: ${bookingData.movie?.title || 'Movie'}
+      Theatre: ${bookingData.theatre?.name || 'Theatre'}
+      Screen: Screen ${bookingData.theatre?.screen?.screenNumber || 'N/A'} (${bookingData.theatre?.screen?.screenType || '2D'})
+      Date: ${formatDate(bookingData.showtime?.date)}
+      Show Time: ${formatTime(bookingData.showtime?.time)}
+      
+      Selected Seats: ${seatsList}
+      Total Amount: ₹${totalAmount}
+
+      Important Instructions:
+      • Please arrive at the theatre at least 15 minutes before showtime
+      • Bring a valid ID and this booking confirmation
+      • Show the QR code at the entrance for easy entry
+      • Seats are non-refundable and non-transferable
+      • In case of any issues, contact the theatre directly
+
+      Enjoy your movie!
+
+      Best regards,
+      The BookNView Team
+    `;
+
+    return await this.sendEmail(bookingData.contactInfo?.email, subject, html);
+  }
 }
 
 module.exports = new EmailService();
