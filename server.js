@@ -20,6 +20,8 @@ const offlineBookingRoutes = require('./routes/offlineBookings');
 const screenRoutes = require('./routes/screens');
 const showTimingRoutes = require('./routes/showTimings');
 const movieRatingRoutes = require('./routes/movieRatings');
+const paymentRoutes = require('./routes/payments');
+const proxyRoutes = require('./routes/proxy');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -161,6 +163,8 @@ app.use(`/api/${apiVersion}/show-timings`, showTimingRoutes);
 app.use(`/api/${apiVersion}/seat-layout`, seatLayoutRoutes);
 app.use(`/api/${apiVersion}/shows`, showSeatLayoutRoutes);
 app.use(`/api/${apiVersion}/movie-ratings`, movieRatingRoutes);
+app.use(`/api/${apiVersion}/payments`, paymentRoutes);
+app.use(`/api/${apiVersion}/proxy`, proxyRoutes);
 app.use(`/api/${apiVersion}/admin`, adminRoutes);
 
 // Root endpoint

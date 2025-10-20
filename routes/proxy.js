@@ -26,52 +26,60 @@ router.get('/tmdb', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Host not allowed' });
     }
 
-    // Force IPv4 DNS lookup to avoid IPv6 connectivity issues (ETIMEDOUT)
-    const lookupIPv4 = (hostname, opts, cb) => dns.lookup(hostname, { family: 4 }, cb);
+    // Resolve IPv4 first to avoid IPv6 issues; then request using the IP with proper SNI/Host
+    dns.lookup(parsedUrl.hostname, { family: 4 }, (err, address) => {
+      if (err) {
+        console.error('TMDB proxy DNS error:', err);
+        return res.status(502).json({ success: false, error: 'DNS lookup failed' });
+      }
 
-    const requestOptions = {
-      protocol: 'https:',
-      hostname: parsedUrl.hostname,
-      path: `${parsedUrl.pathname}${parsedUrl.search}`,
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json'
-      },
-      lookup: lookupIPv4,
-      timeout: 15000
-    };
+      const requestOptions = {
+        protocol: 'https:',
+        hostname: address, // use IPv4 address
+        servername: parsedUrl.hostname, // SNI
+        path: `${parsedUrl.pathname}${parsedUrl.search}`,
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'BookNView-Server/1.0',
+          'Host': parsedUrl.hostname
+        },
+        timeout: 30000
+      };
 
-    const reqUpstream = https.request(requestOptions, (proxyRes) => {
+      const reqUpstream = https.request(requestOptions, (proxyRes) => {
+        // Forward status and content-type
         res.status(proxyRes.statusCode || 500);
-        // Forward content type if present
-        const contentType = proxyRes.headers['content-type'];
-        if (contentType) {
-          res.setHeader('Content-Type', contentType);
-        }
+        const contentType = proxyRes.headers['content-type'] || 'application/json; charset=utf-8';
+        res.setHeader('Content-Type', contentType);
+
         let data = '';
         proxyRes.on('data', (chunk) => (data += chunk));
         proxyRes.on('end', () => {
-          try {
-            // Try to parse JSON to ensure consistent response
-            const json = JSON.parse(data);
-            res.json(json);
-          } catch (_) {
-            // Fallback to raw data
-            res.send(data);
+          // If JSON, try to pass through as JSON; else send raw
+          if (contentType.includes('application/json')) {
+            try {
+              const json = JSON.parse(data || '{}');
+              return res.send(JSON.stringify(json));
+            } catch (_) {
+              // fallthrough
+            }
           }
+          res.send(data);
         });
       });
 
-    reqUpstream.on('timeout', () => {
-      reqUpstream.destroy(new Error('Upstream timeout'));
-    });
+      reqUpstream.on('timeout', () => {
+        reqUpstream.destroy(new Error('Upstream timeout'));
+      });
 
-    reqUpstream.on('error', (err) => {
-      console.error('TMDB proxy error:', err);
-      res.status(502).json({ success: false, error: err.message || 'Upstream fetch failed' });
-    });
+      reqUpstream.on('error', (err) => {
+        console.error('TMDB proxy error:', err);
+        res.status(502).json({ success: false, error: err.message || 'Upstream fetch failed' });
+      });
 
-    reqUpstream.end();
+      reqUpstream.end();
+    });
   } catch (error) {
     console.error('Proxy route error:', error);
     res.status(500).json({ success: false, error: 'Proxy error' });
