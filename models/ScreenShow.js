@@ -7,6 +7,8 @@ const ScreenShowSchema = new mongoose.Schema({
   movieId: { type: mongoose.Schema.Types.ObjectId, ref: 'Movie', required: true },
   // ISO date string YYYY-MM-DD for which these showtimes apply
   bookingDate: { type: String, required: true, index: true },
+  // Array of all dates in the running window (e.g., ["2025-10-20", "2025-10-21", "2025-10-22"])
+  runningDates: { type: [String], default: [] },
   showtimes: { type: [String], default: [] },
   status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' },
   createdAt: { type: Date, default: Date.now },

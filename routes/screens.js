@@ -193,7 +193,7 @@ router.post('/:id/shows', authenticateTheatreOwner, async (req, res) => {
     const ownerId = req.theatreOwner?._id;
     const theatreId = null; // Optional: wire theatre relation later
 
-    // Update movie's first show date if this is the first show assignment
+    // Update movie's first show date if this is the first show assignment for base date
     if (!movie.firstShowDate && requested >= base) {
       await Movie.findByIdAndUpdate(movieId, { 
         firstShowDate: dateStr,
@@ -201,14 +201,52 @@ router.post('/:id/shows', authenticateTheatreOwner, async (req, res) => {
       });
     }
 
-    // Upsert unique triple (screenId, bookingDate, movieId)
-    const doc = await ScreenShow.findOneAndUpdate(
-      { screenId, bookingDate: dateStr, movieId },
-      { $set: { theatreOwnerId: ownerId, theatreId, screenId, movieId, bookingDate: dateStr, showtimes, status, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
-      { new: true, upsert: true }
-    );
-    const populated = await doc.populate('movieId', 'title posterUrl duration releaseDate advanceBookingEnabled firstShowDate');
-    res.json({ success: true, data: populated });
+    // Replicate across running window: create for base date and next N days (N = maxDays)
+    const replicateMaxOffset = Math.max(0, isNaN(clientAsked) ? 0 : clientAsked); // inclusive window 0..N
+    const upsertedDates = [];
+    
+    // Build array of all running dates first
+    const allRunningDates = [];
+    for (let offset = 0; offset <= replicateMaxOffset; offset++) {
+      if (offset > allowed) break;
+      const target = new Date(requested.getTime() + offset * msPerDay);
+      const targetDateStr = toIso(target).slice(0,10);
+      allRunningDates.push(targetDateStr);
+    }
+
+    for (let offset = 0; offset <= replicateMaxOffset; offset++) {
+      // Validate offset within allowed window
+      if (offset > allowed) break;
+      const target = new Date(requested.getTime() + offset * msPerDay);
+      const targetDateStr = toIso(target).slice(0,10);
+
+      // Advance booking checks per target date
+      if (movie.releaseDate) {
+        const releaseDate = new Date(movie.releaseDate);
+        const isAdvance = target < releaseDate;
+        if (isAdvance && !movie.advanceBookingEnabled) {
+          // Skip this target if advance not allowed
+          continue;
+        }
+        if (isAdvance) {
+          const daysUntilRelease = Math.ceil((releaseDate - base) / msPerDay);
+          const targetDiff = Math.round((target - base) / msPerDay);
+          if (targetDiff > daysUntilRelease) {
+            // Skip beyond release date
+            continue;
+          }
+        }
+      }
+
+      const doc = await ScreenShow.findOneAndUpdate(
+        { screenId, bookingDate: targetDateStr, movieId },
+        { $set: { theatreOwnerId: ownerId, theatreId, screenId, movieId, bookingDate: targetDateStr, runningDates: allRunningDates, showtimes, status, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+        { new: true, upsert: true }
+      );
+      if (doc) upsertedDates.push(targetDateStr);
+    }
+
+    res.json({ success: true, data: { upserted: upsertedDates.length, dates: upsertedDates } });
   } catch (error) {
     console.error('Save screen shows error:', error);
     res.status(500).json({ success: false, error: 'Failed to save shows' });
@@ -224,6 +262,36 @@ router.delete('/:id/shows/:showId', authenticateTheatreOwner, async (req, res) =
   } catch (error) {
     console.error('Delete screen show error:', error);
     res.status(500).json({ success: false, error: 'Failed to delete show' });
+  }
+});
+
+// Cleanup past shows for a screen (delete or deactivate)
+router.post('/:id/shows/cleanup', authenticateTheatreOwner, async (req, res) => {
+  try {
+    const screenId = req.params.id;
+    const today = new Date().toISOString().slice(0,10); // YYYY-MM-DD in local timezone
+
+    // Delete all ScreenShow docs with bookingDate before today for this screen
+    const result = await ScreenShow.deleteMany({ screenId: String(screenId), bookingDate: { $lt: today } });
+    return res.json({ success: true, deletedCount: result.deletedCount || 0 });
+  } catch (error) {
+    console.error('Cleanup past shows error:', error);
+    res.status(500).json({ success: false, error: 'Failed to cleanup past shows' });
+  }
+});
+
+// Backfill runningDates for a screen's shows where missing (sets to [bookingDate])
+router.post('/:id/shows/backfill-runningDates', authenticateTheatreOwner, async (req, res) => {
+  try {
+    const screenId = req.params.id;
+    const result = await ScreenShow.updateMany(
+      { screenId: String(screenId), $or: [{ runningDates: { $exists: false } }, { runningDates: null }, { runningDates: { $size: 0 } }] },
+      [{ $set: { runningDates: ['$bookingDate'], updatedAt: new Date() } }]
+    );
+    res.json({ success: true, matched: result.matchedCount || 0, modified: result.modifiedCount || 0 });
+  } catch (error) {
+    console.error('Backfill runningDates error:', error);
+    res.status(500).json({ success: false, error: 'Failed to backfill runningDates' });
   }
 });
 
