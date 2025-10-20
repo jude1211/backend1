@@ -365,8 +365,56 @@ bookingSchema.methods.calculateTotal = function() {
 // Instance method to check if cancellable
 bookingSchema.methods.isCancellable = function() {
   const now = new Date();
-  const showDate = new Date(this.showtime.date);
-  const hoursUntilShow = (showDate - now) / (1000 * 60 * 60);
+  
+  // Parse the showtime date and time properly
+  let showDateTime;
+  try {
+    const dateStr = this.showtime.date.toISOString().split('T')[0]; // Convert to YYYY-MM-DD format
+    const timeStr = this.showtime.time; // e.g., "7:00 PM"
+    
+    // Convert time to 24-hour format if needed
+    let time24 = timeStr;
+    if (timeStr.includes('AM') || timeStr.includes('PM')) {
+      const timeMatch = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+      if (timeMatch) {
+        let hours = parseInt(timeMatch[1]);
+        const minutes = timeMatch[2];
+        const period = timeMatch[3].toUpperCase();
+        
+        if (period === 'PM' && hours !== 12) {
+          hours += 12;
+        } else if (period === 'AM' && hours === 12) {
+          hours = 0;
+        }
+        
+        time24 = `${hours.toString().padStart(2, '0')}:${minutes}`;
+      }
+    }
+    
+    // Create the full datetime string
+    const dateTimeStr = `${dateStr}T${time24}:00`;
+    showDateTime = new Date(dateTimeStr);
+    
+    if (isNaN(showDateTime.getTime())) {
+      // Fallback to just the date if time parsing fails
+      showDateTime = new Date(this.showtime.date);
+    }
+  } catch (error) {
+    console.error('Error parsing showtime in isCancellable:', error);
+    // Fallback to just the date if parsing fails
+    showDateTime = new Date(this.showtime.date);
+  }
+  
+  const hoursUntilShow = (showDateTime.getTime() - now.getTime()) / (1000 * 60 * 60);
+  
+  console.log('Backend isCancellable calculation:', {
+    bookingId: this.bookingId,
+    now: now.toISOString(),
+    showDateTime: showDateTime.toISOString(),
+    hoursUntilShow: hoursUntilShow,
+    canCancel: this.status === 'confirmed' && hoursUntilShow > 2,
+    status: this.status
+  });
   
   return this.status === 'confirmed' && hoursUntilShow > 2; // Can cancel up to 2 hours before show
 };

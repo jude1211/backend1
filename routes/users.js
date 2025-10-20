@@ -225,7 +225,7 @@ router.patch('/admin/:userId/status', async (req, res) => {
 router.use(authenticateUser);
 
 // Get current user profile
-router.get('/profile', async (req, res) => {
+router.get('/profile', authenticateUser, async (req, res) => {
   try {
     const user = await User.findById(req.user._id)
       .populate('favoriteTheatres', 'name location.city')
@@ -252,7 +252,7 @@ router.get('/profile', async (req, res) => {
 });
 
 // Update user profile
-router.put('/profile', [
+router.put('/profile', authenticateUser, [
   body('displayName').optional().trim().isLength({ min: 1, max: 100 }),
   body('firstName').optional().trim().isLength({ max: 50 }),
   body('lastName').optional().trim().isLength({ max: 50 }),
@@ -314,7 +314,7 @@ router.put('/profile', [
 });
 
 // Add address
-router.post('/addresses', [
+router.post('/addresses', authenticateUser, [
   body('type').isIn(['home', 'work', 'other']),
   body('street').trim().isLength({ min: 1, max: 200 }),
   body('city').trim().isLength({ min: 1, max: 50 }),
@@ -364,7 +364,7 @@ router.post('/addresses', [
 });
 
 // Update address
-router.put('/addresses/:addressId', [
+router.put('/addresses/:addressId', authenticateUser, [
   body('type').optional().isIn(['home', 'work', 'other']),
   body('street').optional().trim().isLength({ min: 1, max: 200 }),
   body('city').optional().trim().isLength({ min: 1, max: 50 }),
@@ -426,7 +426,7 @@ router.put('/addresses/:addressId', [
 });
 
 // Delete address
-router.delete('/addresses/:addressId', async (req, res) => {
+router.delete('/addresses/:addressId', authenticateUser, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
     if (!user) {
@@ -462,7 +462,7 @@ router.delete('/addresses/:addressId', async (req, res) => {
 });
 
 // Get user bookings
-router.get('/bookings', async (req, res) => {
+router.get('/bookings', authenticateUser, async (req, res) => {
   try {
     const { status, page = 1, limit = 10, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
 
