@@ -323,3 +323,12 @@ if (require.main === module) {
 }
 
 module.exports = app;
+import cors from "cors";
+
+app.use(
+  cors({
+    origin: ["https://booknview.vercel.app"], // your frontend URL
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
+  })
+);
