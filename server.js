@@ -63,6 +63,7 @@ const allowedOrigins = [
   'http://127.0.0.1:5173',
   'http://127.0.0.1:5174',
   'http://127.0.0.1:5175',
+  'https://booknview.vercel.app',
   process.env.CORS_ORIGIN
 ].filter(Boolean);
 
@@ -234,11 +235,15 @@ const startServer = async () => {
     // Initialize Socket.IO
     const io = new Server(server, {
       cors: {
-        origin: process.env.FRONTEND_URL || "http://localhost:5173",
+        origin: [
+          "http://localhost:5173",
+          "https://booknview.vercel.app"
+        ],
         methods: ["GET", "POST"],
         credentials: true
       }
     });
+    
 
     // Socket.IO connection handling
     io.on('connection', (socket) => {
@@ -323,12 +328,3 @@ if (require.main === module) {
 }
 
 module.exports = app;
-import cors from "cors";
-
-app.use(
-  cors({
-    origin: ["https://booknview.vercel.app"], // your frontend URL
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    credentials: true,
-  })
-);
