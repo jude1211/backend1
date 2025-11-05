@@ -51,6 +51,8 @@ app.use(helmet({
       upgradeInsecureRequests: [],
     },
   },
+  // Allow auth popups (Firebase/Google) to interact with the opener
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
   crossOriginEmbedderPolicy: false
 }));
 app.use(compression());
