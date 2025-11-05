@@ -51,11 +51,17 @@ app.use(helmet({
       upgradeInsecureRequests: [],
     },
   },
-  // Allow auth popups (Firebase/Google) to interact with the opener
-  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
   crossOriginEmbedderPolicy: false
 }));
 app.use(compression());
+
+// Permissive CORS specifically for proxy endpoint to ensure cross-origin access
+// Place this BEFORE the global CORS so it applies to the proxy path first
+app.use(/\/api\/v\d+\/proxy/, cors({ origin: true, credentials: false }));
+app.options(/\/api\/v\d+\/proxy/, cors({ origin: true, credentials: false }));
+// Also expose a non-versioned proxy path for backward/defensive compatibility
+app.use('/proxy', cors({ origin: true, credentials: false }));
+app.options('/proxy', cors({ origin: true, credentials: false }));
 
 // CORS configuration - Support multiple frontend ports and preflight before any other middleware
 const allowedOrigins = [
@@ -183,6 +189,8 @@ app.use(`/api/${apiVersion}/shows`, showSeatLayoutRoutes);
 app.use(`/api/${apiVersion}/movie-ratings`, movieRatingRoutes);
 app.use(`/api/${apiVersion}/payments`, paymentRoutes);
 app.use(`/api/${apiVersion}/proxy`, proxyRoutes);
+// Non-versioned alias for proxy to avoid 404s from older clients
+app.use(`/proxy`, proxyRoutes);
 app.use(`/api/${apiVersion}/analytics`, analyticsRoutes);
 app.use(`/api/${apiVersion}/admin`, adminRoutes);
 

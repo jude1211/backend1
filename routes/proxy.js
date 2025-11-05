@@ -10,6 +10,13 @@ const router = express.Router();
 // Security: Allow only api.themoviedb.org host and GET method
 router.get('/tmdb', async (req, res) => {
   try {
+    // Ensure CORS headers for proxy responses regardless of global CORS
+    const requestOrigin = req.headers.origin || '*';
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
     const target = req.query.url;
     if (!target) {
       return res.status(400).json({ success: false, error: 'Missing url parameter' });
