@@ -29,8 +29,8 @@ This document lists all environment variables used in the backend with their exa
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `EMAIL_USER` | `judinmathew2002@gmail.com` | Gmail address for sending emails |
-| `EMAIL_PASS` | `lilo uplk ujni xfcn` | Gmail app password for SMTP authentication |
+| `SENDGRID_API_KEY` | `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` | SendGrid API key for sending emails |
+| `SENDGRID_FROM_EMAIL` | *(optional, defaults to `noreply@booknview.com`)* | Verified sender email address in SendGrid |
 
 ## Firebase Admin SDK Configuration
 
@@ -136,7 +136,7 @@ From `routes/screens.js` (line 168):
 - **Server**: 3 variables (PORT, NODE_ENV, API_VERSION)
 - **Database**: 2 variables (MONGODB_URI, MONGODB_TEST_URI)
 - **Authentication**: 2 variables (JWT_SECRET, JWT_EXPIRE)
-- **Email**: 2 variables (EMAIL_USER, EMAIL_PASS)
+- **Email**: 2 variables (SENDGRID_API_KEY, SENDGRID_FROM_EMAIL - optional)
 - **Firebase**: 7 variables (6 required, 1 optional)
 - **API**: 2 variables (CORS_ORIGIN, FRONTEND_URL)
 - **File Upload**: 2 variables (MAX_FILE_SIZE, UPLOAD_PATH)

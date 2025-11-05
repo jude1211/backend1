@@ -1,51 +1,36 @@
-const nodemailer = require('nodemailer');
+const sgMail = require('@sendgrid/mail');
 
 class EmailService {
   constructor() {
-    this.transporter = null;
-    this.initializeTransporter();
+    this.isConfigured = false;
+    this.fromEmail = process.env.SENDGRID_FROM_EMAIL || 'noreply@booknview.com';
+    this.initializeSendGrid();
   }
 
-  initializeTransporter() {
+  initializeSendGrid() {
     try {
-      // Check if email credentials are configured
-      if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS || 
-          process.env.EMAIL_USER.includes('your_') || 
-          process.env.EMAIL_PASS.includes('your_')) {
-        console.log('📧 Email credentials not configured - using development mode');
-        console.log('🔧 To enable real emails, update EMAIL_USER and EMAIL_PASS in .env file');
-        this.transporter = null;
+      // Check if SendGrid API key is configured
+      if (!process.env.SENDGRID_API_KEY || 
+          process.env.SENDGRID_API_KEY.includes('your_') ||
+          process.env.SENDGRID_API_KEY.length < 10) {
+        console.log('📧 SendGrid API key not configured - using development mode');
+        console.log('🔧 To enable real emails, update SENDGRID_API_KEY in .env file');
+        this.isConfigured = false;
         return;
       }
 
-      // Configure Gmail SMTP with timeout
-      this.transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS
-        },
-        connectionTimeout: 10000, // 10 seconds
-        greetingTimeout: 5000,    // 5 seconds
-        socketTimeout: 10000      // 10 seconds
-      });
+      // Set SendGrid API key
+      sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-      // Test the connection
-      this.transporter.verify((error, success) => {
-        if (error) {
-          console.error('❌ Gmail SMTP connection failed:', error.message);
-          console.log('🔧 Falling back to development mode');
-          this.transporter = null;
-        } else {
-          console.log('✅ Gmail SMTP connected successfully');
-          console.log(`📧 Email service ready: ${process.env.EMAIL_USER}`);
-        }
-      });
+      // Verify configuration
+      this.isConfigured = true;
+      console.log('✅ SendGrid email service initialized successfully');
+      console.log(`📧 Email service ready: ${this.fromEmail}`);
 
     } catch (error) {
-      console.error('❌ Email service initialization failed:', error.message);
+      console.error('❌ SendGrid initialization failed:', error.message);
       console.log('🔧 Running without email service - OTPs will be logged to console');
-      this.transporter = null;
+      this.isConfigured = false;
     }
   }
 
@@ -58,14 +43,14 @@ class EmailService {
 
     console.log(`📧 Sending ${type} OTP to:`, email);
 
-    // If no transporter is configured, fall back to console logging
-    if (!this.transporter) {
+    // If SendGrid is not configured, fall back to console logging
+    if (!this.isConfigured) {
       // Development mode - log OTP to console
       console.log('\n' + '='.repeat(60));
-      console.log('📧 EMAIL SERVICE - DEVELOPMENT MODE (No SMTP)');
+      console.log('📧 EMAIL SERVICE - DEVELOPMENT MODE (No SendGrid)');
       console.log('='.repeat(60));
       console.log('📧 TO:', email);
-      console.log('📧 FROM:', process.env.EMAIL_USER || 'noreply@booknview.com');
+      console.log('📧 FROM:', this.fromEmail);
       console.log('📧 SUBJECT:', subject);
       console.log('📧 OTP CODE:', otp);
       console.log('📧 TYPE:', type);
@@ -73,53 +58,54 @@ class EmailService {
       console.log('⚠️  COPY THIS OTP CODE FOR TESTING ⚠️');
       console.log('⚠️  EMAIL WOULD BE SENT TO: ' + email + ' ⚠️');
       console.log('='.repeat(60));
-      console.log('🔧 To enable real emails, configure EMAIL_USER and EMAIL_PASS in .env file');
+      console.log('🔧 To enable real emails, configure SENDGRID_API_KEY in .env file');
       console.log('📖 See email-setup-guide.md for detailed instructions');
       console.log('='.repeat(60) + '\n');
       return {
         success: true,
-        message: `OTP logged to console (no SMTP configured) - would send to ${email}`,
+        message: `OTP logged to console (no SendGrid configured) - would send to ${email}`,
         otp: otp, // Include OTP in response for development
         recipientEmail: email
       };
     }
 
     try {
-      const mailOptions = {
-        from: `"BookNView" <${process.env.EMAIL_USER}>`,
+      const msg = {
         to: email,
+        from: {
+          name: 'BookNView',
+          email: this.fromEmail
+        },
         subject: subject,
         html: htmlContent
       };
 
-      console.log('📧 Attempting to send real email to:', email);
+      console.log('📧 Attempting to send real email via SendGrid to:', email);
 
-      // Set a timeout for email sending
-      const emailPromise = this.transporter.sendMail(mailOptions);
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Email timeout')), 15000)
-      );
-
-      const result = await Promise.race([emailPromise, timeoutPromise]);
+      // Send email via SendGrid
+      const result = await sgMail.send(msg);
 
       console.log('✅ Real email sent successfully to:', email);
-      console.log('📧 Message ID:', result.messageId);
+      console.log('📧 Status Code:', result[0].statusCode);
       console.log('📬 Check your email inbox for the OTP!');
 
       return {
         success: true,
-        messageId: result.messageId,
+        statusCode: result[0].statusCode,
         message: `OTP sent to ${email}. Check your inbox!`
       };
     } catch (error) {
       console.error('❌ Real email sending failed:', error.message);
+      if (error.response) {
+        console.error('📧 SendGrid Error Details:', JSON.stringify(error.response.body, null, 2));
+      }
 
       // Fall back to console logging with clear indication
       console.log('\n' + '='.repeat(60));
       console.log('📧 EMAIL FALLBACK - CONSOLE MODE');
       console.log('='.repeat(60));
       console.log('📧 TO:', email);
-      console.log('📧 FROM:', process.env.EMAIL_USER);
+      console.log('📧 FROM:', this.fromEmail);
       console.log('📧 SUBJECT:', subject);
       console.log('📧 OTP CODE:', otp);
       console.log('📧 TYPE:', type);
@@ -184,14 +170,14 @@ class EmailService {
     console.log(`📧 Sending email to: ${email}`);
     console.log(`📧 Subject: ${subject}`);
 
-    // If no transporter is configured, fall back to console logging
-    if (!this.transporter) {
+    // If SendGrid is not configured, fall back to console logging
+    if (!this.isConfigured) {
       // Development mode - log email to console
       console.log('\n' + '='.repeat(60));
-      console.log('📧 EMAIL SERVICE - DEVELOPMENT MODE (No SMTP)');
+      console.log('📧 EMAIL SERVICE - DEVELOPMENT MODE (No SendGrid)');
       console.log('='.repeat(60));
       console.log('📧 TO:', email);
-      console.log('📧 FROM:', process.env.EMAIL_USER || 'noreply@booknview.com');
+      console.log('📧 FROM:', this.fromEmail);
       console.log('📧 SUBJECT:', subject);
       console.log('📧 CONTENT TYPE: HTML');
       console.log('='.repeat(60));
@@ -201,48 +187,49 @@ class EmailService {
       console.log('📧 EMAIL CONTENT:');
       console.log(htmlContent.replace(/<[^>]*>/g, '')); // Strip HTML for console
       console.log('='.repeat(60));
-      console.log('🔧 To enable real emails, configure EMAIL_USER and EMAIL_PASS in .env file');
+      console.log('🔧 To enable real emails, configure SENDGRID_API_KEY in .env file');
       console.log('📖 See email-setup-guide.md for detailed instructions');
       console.log('='.repeat(60) + '\n');
 
       return {
         success: true,
-        message: `Email logged to console (no SMTP configured) - would send to ${email}`,
+        message: `Email logged to console (no SendGrid configured) - would send to ${email}`,
         recipientEmail: email
       };
     }
 
     try {
-      const mailOptions = {
-        from: `"BookNView" <${process.env.EMAIL_USER}>`,
+      const msg = {
         to: email,
+        from: {
+          name: 'BookNView',
+          email: this.fromEmail
+        },
         subject: subject,
         html: htmlContent
       };
 
-      console.log('📧 Attempting to send real email to:', email);
+      console.log('📧 Attempting to send real email via SendGrid to:', email);
 
-      // Set a timeout for email sending
-      const emailPromise = this.transporter.sendMail(mailOptions);
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Email timeout')), 15000)
-      );
-
-      const result = await Promise.race([emailPromise, timeoutPromise]);
+      // Send email via SendGrid
+      const result = await sgMail.send(msg);
 
       console.log('✅ Real email sent successfully to:', email);
-      console.log('📧 Message ID:', result.messageId);
+      console.log('📧 Status Code:', result[0].statusCode);
 
       return {
         success: true,
         message: `Email sent successfully to ${email}`,
-        messageId: result.messageId,
+        statusCode: result[0].statusCode,
         recipientEmail: email
       };
 
     } catch (error) {
       console.error('❌ Failed to send email to:', email);
       console.error('❌ Email error:', error.message);
+      if (error.response) {
+        console.error('📧 SendGrid Error Details:', JSON.stringify(error.response.body, null, 2));
+      }
 
       // Return error details for debugging
       return {

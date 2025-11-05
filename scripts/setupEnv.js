@@ -42,9 +42,11 @@ CLOUDINARY_CLOUD_NAME=your-cloud-name
 CLOUDINARY_API_KEY=your-api-key
 CLOUDINARY_API_SECRET=your-api-secret
 
-# Email Configuration (Gmail)
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASS=your-app-password
+# Email Configuration (SendGrid)
+# Get your API key from: https://app.sendgrid.com/settings/api_keys
+SENDGRID_API_KEY=SG.your_sendgrid_api_key_here
+# Optional: Verified sender email (defaults to noreply@booknview.com if not set)
+SENDGRID_FROM_EMAIL=your-verified-email@yourdomain.com
 
 # CORS Configuration
 CORS_ORIGIN=http://localhost:5174
