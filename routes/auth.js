@@ -64,17 +64,20 @@ router.post('/send-otp', [
     // Create and send OTP
     const result = await OTP.createOTP(email, type);
 
-    // In development mode, include OTP in response for testing
+    // Base response
     const response = {
       success: true,
       message: `${type === 'verification' ? 'Verification' : 'Password reset'} code sent to your email`,
       expiresAt: result.expiresAt
     };
 
-    // Add OTP to response in development mode
-    if (process.env.NODE_ENV === 'development' && result.emailResult && result.emailResult.otp) {
+    // If email service fell back (e.g., SendGrid failure) or provided an OTP, surface it to unblock UX
+    // This helps environments where emails are not delivered yet
+    if (result && result.emailResult && result.emailResult.otp) {
       response.developmentOTP = result.emailResult.otp;
-      response.message += ` (Development: ${result.emailResult.otp})`;
+      if (result.emailResult.fallback) {
+        response.message += ' (Email delivery fallback active)';
+      }
     }
 
     res.json(response);
