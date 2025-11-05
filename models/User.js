@@ -24,7 +24,15 @@ const userSchema = new mongoose.Schema({
     required: function() {
       return !this.firebaseUid; // Password required only if not using Firebase
     },
-    minlength: 6
+    minlength: [6, 'Password must be at least 6 characters long'],
+    validate: {
+      validator: function(v) {
+        if (!v) return true; // Allow empty for Firebase users
+        // Password must contain at least one letter and one number
+        return /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]/.test(v);
+      },
+      message: 'Password must contain at least one letter and one number'
+    }
   },
   
   displayName: {
@@ -279,10 +287,17 @@ const userSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// Indexes for better query performance (removed duplicates)
+// Indexes for better query performance
+userSchema.index({ email: 1 }, { unique: true });
+userSchema.index({ firebaseUid: 1 }, { unique: true, sparse: true });
 userSchema.index({ preferredCity: 1 });
 userSchema.index({ createdAt: -1 });
 userSchema.index({ lastActiveAt: -1 });
+userSchema.index({ isActive: 1 });
+userSchema.index({ isEmailVerified: 1 });
+userSchema.index({ membershipTier: 1 });
+userSchema.index({ 'addresses.city': 1 });
+userSchema.index({ 'metadata.registrationSource': 1 });
 
 // Virtual for full name
 userSchema.virtual('fullName').get(function() {

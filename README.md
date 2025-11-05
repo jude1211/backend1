@@ -96,7 +96,7 @@ backend/
    cp .env.example .env
    ```
    
-   Edit `.env` with your configuration:
+   Edit `.env1    ` with your configuration:
    ```env
    # Server Configuration
    PORT=5000

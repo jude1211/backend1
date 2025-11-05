@@ -226,6 +226,12 @@ router.post(
 
       // Identify show/movie
       const show = await ScreenShow.findOne({ screenId, bookingDate, showtimes: decodedShowtime }).populate('movieId', 'title posterUrl duration');
+      console.log('Found show:', {
+        showId: show?._id,
+        theatreOwnerId: show?.theatreOwnerId,
+        theatreId: show?.theatreId,
+        movieTitle: show?.movieId?.title
+      });
 
       // Check live availability by querying existing confirmed bookings for this show
       const liveBookings = await Booking.find({
@@ -263,11 +269,15 @@ router.post(
       let theatreDoc = null;
       let theatreName = 'Theatre';
       
+      console.log('Starting theatre name resolution...');
+      console.log('Layout theatreId:', layout.theatreId);
+      
       if (layout.theatreId) {
         try {
           theatreDoc = await Theatre.findById(layout.theatreId).lean();
           if (theatreDoc) {
             theatreName = theatreDoc.name || 'Theatre';
+            console.log('Found theatre from layout:', theatreName);
           }
         } catch (error) {
           console.error('Error fetching theatre:', error);
@@ -288,12 +298,36 @@ router.post(
       }
       
       // If theatre name is still default, try to get from TheatreOwner collection
+      // Use the specific theatre owner associated with this show
       if (!theatreName || theatreName === 'Theatre' || theatreName === 'Default Theatre') {
         try {
           const TheatreOwner = require('../models/TheatreOwner');
-          const theatreOwner = await TheatreOwner.findOne({
-            isActive: true
-          }).select('theatreName').lean();
+          let theatreOwner = null;
+          
+          // First try to find theatre owner by show's theatreOwnerId (most specific)
+          if (show?.theatreOwnerId) {
+            theatreOwner = await TheatreOwner.findById(show.theatreOwnerId)
+              .select('theatreName')
+              .lean();
+            console.log('Found theatre owner by theatreOwnerId:', theatreOwner?.theatreName);
+          }
+          
+          // If not found by theatreOwnerId, try by show's theatreId
+          if (!theatreOwner && show?.theatreId) {
+            theatreOwner = await TheatreOwner.findOne({
+              theatreId: show.theatreId,
+              isActive: true
+            }).select('theatreName').lean();
+            console.log('Found theatre owner by theatreId:', theatreOwner?.theatreName);
+          }
+          
+          // If still not found, try to find any active theatre owner as fallback
+          if (!theatreOwner) {
+            theatreOwner = await TheatreOwner.findOne({
+              isActive: true
+            }).select('theatreName').lean();
+            console.log('Found theatre owner by fallback:', theatreOwner?.theatreName);
+          }
           
           if (theatreOwner && theatreOwner.theatreName) {
             console.log('Using theatre name from TheatreOwner:', theatreOwner.theatreName);
@@ -312,6 +346,9 @@ router.post(
         price: Number(s.price)
       }));
       const totalAmount = seatsPayload.reduce((sum, s) => sum + (Number(s.price) || 0), 0);
+      
+      console.log('Final theatre name for booking:', theatreName);
+      console.log('Theatre doc:', theatreDoc);
 
       const booking = new Booking({
         bookingId,

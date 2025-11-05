@@ -22,6 +22,7 @@ const showTimingRoutes = require('./routes/showTimings');
 const movieRatingRoutes = require('./routes/movieRatings');
 const paymentRoutes = require('./routes/payments');
 const proxyRoutes = require('./routes/proxy');
+const analyticsRoutes = require('./routes/analytics');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -36,7 +37,22 @@ const app = express();
 initializeFirebase();
 
 // Security middleware
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https:", "blob:"],
+      scriptSrc: ["'self'"],
+      connectSrc: ["'self'", "https://api.razorpay.com", "https://api.cloudinary.com"],
+      frameSrc: ["'self'", "https://js.razorpay.com"],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  crossOriginEmbedderPolicy: false
+}));
 app.use(compression());
 
 // CORS configuration - Support multiple frontend ports and preflight before any other middleware
@@ -165,6 +181,7 @@ app.use(`/api/${apiVersion}/shows`, showSeatLayoutRoutes);
 app.use(`/api/${apiVersion}/movie-ratings`, movieRatingRoutes);
 app.use(`/api/${apiVersion}/payments`, paymentRoutes);
 app.use(`/api/${apiVersion}/proxy`, proxyRoutes);
+app.use(`/api/${apiVersion}/analytics`, analyticsRoutes);
 app.use(`/api/${apiVersion}/admin`, adminRoutes);
 
 // Root endpoint

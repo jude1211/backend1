@@ -20,7 +20,7 @@ PORT=5001
 API_VERSION=v1
 
 # MongoDB Configuration
-MONGODB_URI=mongodb://localhost:27017/booknview
+MONGODB_URI=mongodb+srv://jude:Jude%402002@booknview-cluster.xzpi8e0.mongodb.net/?appName=booknview-cluster
 MONGODB_TEST_URI=mongodb://localhost:27017/booknview_test
 
 # JWT Configuration

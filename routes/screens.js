@@ -120,9 +120,16 @@ router.get('/:id/shows', authenticateTheatreOwner, async (req, res) => {
   try {
     const screenId = req.params.id;
     const { date } = req.query;
-    const filter = { screenId };
+    const theatreOwnerId = req.theatreOwner._id;
+    
+    // Filter by both screenId and theatreOwnerId to ensure theatre owners only see their own shows
+    const filter = { 
+      screenId,
+      theatreOwnerId: theatreOwnerId
+    };
     // Only filter by date if explicitly requested, otherwise return all shows for the screen
     if (date) filter.bookingDate = String(date);
+    
     const docs = await ScreenShow.find(filter)
       .sort({ bookingDate: -1, createdAt: -1 })
       .populate('movieId', 'title posterUrl duration releaseDate advanceBookingEnabled firstShowDate');
@@ -191,7 +198,22 @@ router.post('/:id/shows', authenticateTheatreOwner, async (req, res) => {
     }
 
     const ownerId = req.theatreOwner?._id;
-    const theatreId = null; // Optional: wire theatre relation later
+    // Get theatreId from the theatre owner's data
+    let theatreId = null;
+    if (req.theatreOwner?.theatreId) {
+      theatreId = req.theatreOwner.theatreId;
+    } else if (req.theatreOwner?.applicationId) {
+      // Try to get theatreId from the application
+      try {
+        const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
+        const application = await TheatreOwnerApplication.findById(req.theatreOwner.applicationId);
+        if (application?.theatreId) {
+          theatreId = application.theatreId;
+        }
+      } catch (error) {
+        console.error('Error fetching theatreId from application:', error);
+      }
+    }
 
     // Update movie's first show date if this is the first show assignment for base date
     if (!movie.firstShowDate && requested >= base) {
@@ -257,6 +279,18 @@ router.post('/:id/shows', authenticateTheatreOwner, async (req, res) => {
 router.delete('/:id/shows/:showId', authenticateTheatreOwner, async (req, res) => {
   try {
     const { showId } = req.params;
+    const theatreOwnerId = req.theatreOwner._id;
+    
+    // First verify the show belongs to this theatre owner
+    const show = await ScreenShow.findById(showId);
+    if (!show) {
+      return res.status(404).json({ success: false, error: 'Show not found' });
+    }
+    
+    if (String(show.theatreOwnerId) !== String(theatreOwnerId)) {
+      return res.status(403).json({ success: false, error: 'Not authorized to delete this show' });
+    }
+    
     await ScreenShow.findByIdAndDelete(showId);
     res.json({ success: true });
   } catch (error) {
@@ -269,10 +303,15 @@ router.delete('/:id/shows/:showId', authenticateTheatreOwner, async (req, res) =
 router.post('/:id/shows/cleanup', authenticateTheatreOwner, async (req, res) => {
   try {
     const screenId = req.params.id;
+    const theatreOwnerId = req.theatreOwner._id;
     const today = new Date().toISOString().slice(0,10); // YYYY-MM-DD in local timezone
 
-    // Delete all ScreenShow docs with bookingDate before today for this screen
-    const result = await ScreenShow.deleteMany({ screenId: String(screenId), bookingDate: { $lt: today } });
+    // Delete all ScreenShow docs with bookingDate before today for this screen and theatre owner
+    const result = await ScreenShow.deleteMany({ 
+      screenId: String(screenId), 
+      theatreOwnerId: theatreOwnerId,
+      bookingDate: { $lt: today } 
+    });
     return res.json({ success: true, deletedCount: result.deletedCount || 0 });
   } catch (error) {
     console.error('Cleanup past shows error:', error);
@@ -284,8 +323,13 @@ router.post('/:id/shows/cleanup', authenticateTheatreOwner, async (req, res) => 
 router.post('/:id/shows/backfill-runningDates', authenticateTheatreOwner, async (req, res) => {
   try {
     const screenId = req.params.id;
+    const theatreOwnerId = req.theatreOwner._id;
     const result = await ScreenShow.updateMany(
-      { screenId: String(screenId), $or: [{ runningDates: { $exists: false } }, { runningDates: null }, { runningDates: { $size: 0 } }] },
+      { 
+        screenId: String(screenId), 
+        theatreOwnerId: theatreOwnerId,
+        $or: [{ runningDates: { $exists: false } }, { runningDates: null }, { runningDates: { $size: 0 } }] 
+      },
       [{ $set: { runningDates: ['$bookingDate'], updatedAt: new Date() } }]
     );
     res.json({ success: true, matched: result.matchedCount || 0, modified: result.modifiedCount || 0 });
