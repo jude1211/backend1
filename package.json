@@ -22,6 +22,7 @@
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
     "bcryptjs": "^2.4.3",
+    "chromedriver": "^142.0.0",
     "cloudinary": "^2.7.0",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
@@ -43,6 +44,7 @@
   "devDependencies": {
     "jest": "^29.7.0",
     "nodemon": "^3.0.2",
+    "selenium-webdriver": "^4.38.0",
     "supertest": "^6.3.3"
   },
   "engines": {
