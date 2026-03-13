@@ -26,7 +26,7 @@ const SeatClassSchema = new mongoose.Schema({
 }, { _id: false });
 
 const ScreenLayoutSchema = new mongoose.Schema({
-  screenId: { type: String, required: true, index: true },
+  screenId: { type: String, required: true },
   theatreId: { type: mongoose.Schema.Types.ObjectId, ref: 'Theatre' },
   screenName: { type: String },
   meta: {

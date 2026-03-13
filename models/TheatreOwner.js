@@ -23,7 +23,7 @@ const theatreOwnerSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
-  
+
   // Personal Information
   ownerName: {
     type: String,
@@ -35,7 +35,7 @@ const theatreOwnerSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
-  
+
   // Theatre Information
   theatreName: {
     type: String,
@@ -57,7 +57,7 @@ const theatreOwnerSchema = new mongoose.Schema({
       longitude: Number
     }
   },
-  
+
   // Theatre Details
   screenCount: {
     type: Number,
@@ -69,7 +69,7 @@ const theatreOwnerSchema = new mongoose.Schema({
     required: true,
     min: 1
   },
-  
+
   // Account Status
   isActive: {
     type: Boolean,
@@ -79,14 +79,14 @@ const theatreOwnerSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  
+
   // Application Reference
   applicationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'TheatreOwnerApplication',
     required: true
   },
-  
+
   // Account Management
   lastLoginAt: {
     type: Date
@@ -101,7 +101,7 @@ const theatreOwnerSchema = new mongoose.Schema({
   lockUntil: {
     type: Date
   },
-  
+
   // Profile
   profilePicture: {
     type: String
@@ -110,14 +110,14 @@ const theatreOwnerSchema = new mongoose.Schema({
     type: String,
     maxlength: 500
   },
-  
+
   // Business Information
   businessLicense: {
     number: String,
     expiryDate: Date,
     documentUrl: String
   },
-  
+
   // Preferences
   preferences: {
     notifications: {
@@ -135,7 +135,7 @@ const theatreOwnerSchema = new mongoose.Schema({
       default: 'Asia/Kolkata'
     }
   },
-  
+
   // Metadata
   createdAt: {
     type: Date,
@@ -153,21 +153,20 @@ const theatreOwnerSchema = new mongoose.Schema({
 });
 
 // Indexes
-theatreOwnerSchema.index({ email: 1 });
-theatreOwnerSchema.index({ username: 1 });
+// Note: email and username indexes are already defined in schema with unique: true
 theatreOwnerSchema.index({ applicationId: 1 });
 theatreOwnerSchema.index({ isActive: 1 });
 
 // Virtual for account lock status
-theatreOwnerSchema.virtual('isLocked').get(function() {
+theatreOwnerSchema.virtual('isLocked').get(function () {
   return !!(this.lockUntil && this.lockUntil > Date.now());
 });
 
 // Pre-save middleware to hash password
-theatreOwnerSchema.pre('save', async function(next) {
+theatreOwnerSchema.pre('save', async function (next) {
   // Only hash the password if it has been modified (or is new)
   if (!this.isModified('password')) return next();
-  
+
   try {
     // Hash password with cost of 12
     const salt = await bcrypt.genSalt(12);
@@ -179,13 +178,13 @@ theatreOwnerSchema.pre('save', async function(next) {
 });
 
 // Pre-save middleware to update timestamps
-theatreOwnerSchema.pre('save', function(next) {
+theatreOwnerSchema.pre('save', function (next) {
   this.updatedAt = new Date();
   next();
 });
 
 // Instance method to check password
-theatreOwnerSchema.methods.comparePassword = async function(candidatePassword) {
+theatreOwnerSchema.methods.comparePassword = async function (candidatePassword) {
   try {
     return await bcrypt.compare(candidatePassword, this.password);
   } catch (error) {
@@ -194,7 +193,7 @@ theatreOwnerSchema.methods.comparePassword = async function(candidatePassword) {
 };
 
 // Instance method to increment login attempts
-theatreOwnerSchema.methods.incLoginAttempts = function() {
+theatreOwnerSchema.methods.incLoginAttempts = function () {
   // If we have a previous lock that has expired, restart at 1
   if (this.lockUntil && this.lockUntil < Date.now()) {
     return this.updateOne({
@@ -202,26 +201,26 @@ theatreOwnerSchema.methods.incLoginAttempts = function() {
       $set: { loginAttempts: 1 }
     });
   }
-  
+
   const updates = { $inc: { loginAttempts: 1 } };
-  
+
   // Lock account after 5 failed attempts for 2 hours
   if (this.loginAttempts + 1 >= 5 && !this.isLocked) {
     updates.$set = { lockUntil: Date.now() + 2 * 60 * 60 * 1000 }; // 2 hours
   }
-  
+
   return this.updateOne(updates);
 };
 
 // Instance method to reset login attempts
-theatreOwnerSchema.methods.resetLoginAttempts = function() {
+theatreOwnerSchema.methods.resetLoginAttempts = function () {
   return this.updateOne({
     $unset: { loginAttempts: 1, lockUntil: 1 }
   });
 };
 
 // Static method to find by credentials
-theatreOwnerSchema.statics.findByCredentials = async function(username, password) {
+theatreOwnerSchema.statics.findByCredentials = async function (username, password) {
   const owner = await this.findOne({
     $or: [
       { username: username },
@@ -229,42 +228,42 @@ theatreOwnerSchema.statics.findByCredentials = async function(username, password
     ],
     isActive: true
   });
-  
+
   if (!owner) {
     throw new Error('Invalid credentials');
   }
-  
+
   if (owner.isLocked) {
     throw new Error('Account is temporarily locked due to too many failed login attempts');
   }
-  
+
   const isMatch = await owner.comparePassword(password);
-  
+
   if (!isMatch) {
     await owner.incLoginAttempts();
     throw new Error('Invalid credentials');
   }
-  
+
   // Reset login attempts on successful login
   if (owner.loginAttempts > 0) {
     await owner.resetLoginAttempts();
   }
-  
+
   // Update last login
   owner.lastLoginAt = new Date();
   await owner.save();
-  
+
   return owner;
 };
 
 // Static method to generate username
-theatreOwnerSchema.statics.generateUsername = async function(theatreName, ownerName) {
+theatreOwnerSchema.statics.generateUsername = async function (theatreName, ownerName) {
   // Create base username from theatre name
   let baseUsername = theatreName
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '')
     .substring(0, 15);
-  
+
   if (baseUsername.length < 3) {
     // Fallback to owner name if theatre name is too short
     baseUsername = ownerName
@@ -272,16 +271,16 @@ theatreOwnerSchema.statics.generateUsername = async function(theatreName, ownerN
       .replace(/[^a-z0-9]/g, '')
       .substring(0, 15);
   }
-  
+
   let username = baseUsername;
   let counter = 1;
-  
+
   // Check if username exists and increment counter if needed
   while (await this.findOne({ username })) {
     username = `${baseUsername}${counter}`;
     counter++;
   }
-  
+
   return username;
 };
 

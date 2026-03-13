@@ -21,12 +21,12 @@ const userSchema = new mongoose.Schema({
   // Password for manual authentication
   password: {
     type: String,
-    required: function() {
+    required: function () {
       return !this.firebaseUid; // Password required only if not using Firebase
     },
     minlength: [6, 'Password must be at least 6 characters long'],
     validate: {
-      validator: function(v) {
+      validator: function (v) {
         if (!v) return true; // Allow empty for Firebase users
         // Password must contain at least one letter and one number
         return /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]/.test(v);
@@ -34,39 +34,39 @@ const userSchema = new mongoose.Schema({
       message: 'Password must contain at least one letter and one number'
     }
   },
-  
+
   displayName: {
     type: String,
     required: true,
     trim: true
   },
-  
+
   firstName: {
     type: String,
     trim: true
   },
-  
+
   lastName: {
     type: String,
     trim: true
   },
-  
+
   // Contact Information
   phone: {
     type: String,
     trim: true
   },
-  
+
   dateOfBirth: {
     type: Date
   },
-  
+
   // Profile Information
   profilePicture: {
     type: String, // URL to profile picture
     default: null
   },
-  
+
   // File uploads
   documents: [{
     fileName: {
@@ -100,14 +100,14 @@ const userSchema = new mongoose.Schema({
       default: 'other'
     }
   }],
-  
+
   // Location Preferences
   preferredCity: {
     type: String,
     default: 'Mumbai',
     enum: ['Mumbai', 'Delhi', 'Bangalore', 'Chennai', 'Kolkata', 'Hyderabad', 'Pune', 'Ahmedabad']
   },
-  
+
   // User Preferences
   preferences: {
     language: {
@@ -115,7 +115,7 @@ const userSchema = new mongoose.Schema({
       default: 'English',
       enum: ['English', 'Hindi', 'Tamil', 'Telugu', 'Bengali', 'Marathi']
     },
-    
+
     notifications: {
       email: {
         type: Boolean,
@@ -130,25 +130,25 @@ const userSchema = new mongoose.Schema({
         default: false
       }
     },
-    
+
     newsletter: {
       type: Boolean,
       default: false
     },
-    
+
     theme: {
       type: String,
       default: 'dark',
       enum: ['light', 'dark', 'auto']
     }
   },
-  
+
   // Account Status
   isActive: {
     type: Boolean,
     default: true
   },
-  
+
   isEmailVerified: {
     type: Boolean,
     default: false
@@ -171,24 +171,24 @@ const userSchema = new mongoose.Schema({
     enum: ['email', 'google', 'facebook'],
     default: 'email'
   },
-  
+
   // Booking Statistics
   totalBookings: {
     type: Number,
     default: 0
   },
-  
+
   totalSpent: {
     type: Number,
     default: 0
   },
-  
+
   // Favorite Theatres and Movies
   favoriteTheatres: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Theatre'
   }],
-  
+
   favoriteMovies: [{
     movieId: String,
     title: String,
@@ -197,19 +197,19 @@ const userSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
-  
+
   // Loyalty Program
   loyaltyPoints: {
     type: Number,
     default: 0
   },
-  
+
   membershipTier: {
     type: String,
     enum: ['bronze', 'silver', 'gold', 'platinum'],
     default: 'bronze'
   },
-  
+
   // Address Information
   addresses: [{
     type: {
@@ -230,7 +230,7 @@ const userSchema = new mongoose.Schema({
       default: false
     }
   }],
-  
+
   // Payment Methods (stored securely, only metadata)
   paymentMethods: [{
     type: {
@@ -249,18 +249,18 @@ const userSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
-  
+
   // Activity Tracking
   lastLoginAt: {
     type: Date,
     default: Date.now
   },
-  
+
   lastActiveAt: {
     type: Date,
     default: Date.now
   },
-  
+
   // Metadata
   metadata: {
     registrationSource: {
@@ -268,13 +268,13 @@ const userSchema = new mongoose.Schema({
       enum: ['web', 'mobile', 'admin'],
       default: 'web'
     },
-    
+
     referralCode: String,
     referredBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User'
     },
-    
+
     deviceInfo: {
       userAgent: String,
       platform: String,
@@ -288,8 +288,7 @@ const userSchema = new mongoose.Schema({
 });
 
 // Indexes for better query performance
-userSchema.index({ email: 1 }, { unique: true });
-userSchema.index({ firebaseUid: 1 }, { unique: true, sparse: true });
+// Note: email and firebaseUid indexes are already defined in schema with unique: true
 userSchema.index({ preferredCity: 1 });
 userSchema.index({ createdAt: -1 });
 userSchema.index({ lastActiveAt: -1 });
@@ -300,7 +299,7 @@ userSchema.index({ 'addresses.city': 1 });
 userSchema.index({ 'metadata.registrationSource': 1 });
 
 // Virtual for full name
-userSchema.virtual('fullName').get(function() {
+userSchema.virtual('fullName').get(function () {
   if (this.firstName && this.lastName) {
     return `${this.firstName} ${this.lastName}`;
   }
@@ -308,30 +307,30 @@ userSchema.virtual('fullName').get(function() {
 });
 
 // Virtual for age calculation
-userSchema.virtual('age').get(function() {
+userSchema.virtual('age').get(function () {
   if (this.dateOfBirth) {
     const today = new Date();
     const birthDate = new Date(this.dateOfBirth);
     let age = today.getFullYear() - birthDate.getFullYear();
     const monthDiff = today.getMonth() - birthDate.getMonth();
-    
+
     if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
       age--;
     }
-    
+
     return age;
   }
   return null;
 });
 
 // Instance method to update last active
-userSchema.methods.updateLastActive = function() {
+userSchema.methods.updateLastActive = function () {
   this.lastActiveAt = new Date();
   return this.save();
 };
 
 // Instance method to add loyalty points
-userSchema.methods.addLoyaltyPoints = function(points) {
+userSchema.methods.addLoyaltyPoints = function (points) {
   this.loyaltyPoints += points;
 
   // Update membership tier based on points
@@ -347,7 +346,7 @@ userSchema.methods.addLoyaltyPoints = function(points) {
 };
 
 // Instance method to compare password
-userSchema.methods.comparePassword = async function(candidatePassword) {
+userSchema.methods.comparePassword = async function (candidatePassword) {
   if (!this.password) {
     return false; // No password set (Firebase user)
   }
@@ -355,18 +354,18 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 };
 
 // Instance method to change password
-userSchema.methods.changePassword = async function(newPassword) {
+userSchema.methods.changePassword = async function (newPassword) {
   this.password = newPassword;
   return this.save();
 };
 
 // Static method to find by Firebase UID
-userSchema.statics.findByFirebaseUid = function(firebaseUid) {
+userSchema.statics.findByFirebaseUid = function (firebaseUid) {
   return this.findOne({ firebaseUid });
 };
 
 // Static method to authenticate user with email and password
-userSchema.statics.authenticate = async function(email, password) {
+userSchema.statics.authenticate = async function (email, password) {
   console.log('🔍 Authenticating user:', email);
   const user = await this.findOne({ email: email.toLowerCase() });
 
@@ -394,7 +393,7 @@ userSchema.statics.authenticate = async function(email, password) {
 };
 
 // Pre-save middleware
-userSchema.pre('save', async function(next) {
+userSchema.pre('save', async function (next) {
   // Hash password if it's modified and not already hashed
   if (this.isModified('password') && this.password) {
     try {

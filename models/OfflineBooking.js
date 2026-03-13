@@ -39,7 +39,7 @@ const offlineBookingSchema = new mongoose.Schema({
       required: true
     }
   },
-  
+
   // Movie Information
   movie: {
     title: {
@@ -53,7 +53,7 @@ const offlineBookingSchema = new mongoose.Schema({
     language: String,
     year: Number
   },
-  
+
   // Theatre and Show Information
   theatre: {
     theatreId: {
@@ -77,7 +77,7 @@ const offlineBookingSchema = new mongoose.Schema({
       }
     }
   },
-  
+
   // Show Details
   showtime: {
     date: {
@@ -89,7 +89,7 @@ const offlineBookingSchema = new mongoose.Schema({
       required: true
     }
   },
-  
+
   // Seat Information
   seats: [{
     seatNumber: {
@@ -107,7 +107,7 @@ const offlineBookingSchema = new mongoose.Schema({
       required: true
     }
   }],
-  
+
   // Snacks and Beverages
   snacks: [{
     name: {
@@ -137,7 +137,7 @@ const offlineBookingSchema = new mongoose.Schema({
       enum: ['small', 'medium', 'large', 'extra-large']
     }
   }],
-  
+
   // Pricing Information
   pricing: {
     seatTotal: {
@@ -175,7 +175,7 @@ const offlineBookingSchema = new mongoose.Schema({
       required: true
     }
   },
-  
+
   // Payment Information
   payment: {
     method: {
@@ -202,25 +202,25 @@ const offlineBookingSchema = new mongoose.Schema({
       default: Date.now
     }
   },
-  
+
   // Booking Status
   status: {
     type: String,
     enum: ['confirmed', 'cancelled', 'completed', 'no_show'],
     default: 'confirmed'
   },
-  
+
   // Booking Type
   bookingType: {
     type: String,
     enum: ['online', 'offline'],
     default: 'offline'
   },
-  
+
   // Additional Information
   notes: String,
   cancellationReason: String,
-  
+
   // Timestamps
   bookingDate: {
     type: Date,
@@ -240,7 +240,7 @@ const offlineBookingSchema = new mongoose.Schema({
 });
 
 // Generate unique booking ID
-offlineBookingSchema.pre('save', async function(next) {
+offlineBookingSchema.pre('save', async function (next) {
   if (!this.bookingId) {
     const count = await this.constructor.countDocuments();
     this.bookingId = `OFF${Date.now().toString().slice(-8)}${(count + 1).toString().padStart(4, '0')}`;
@@ -249,35 +249,35 @@ offlineBookingSchema.pre('save', async function(next) {
 });
 
 // Calculate total amount
-offlineBookingSchema.methods.calculateTotal = function() {
+offlineBookingSchema.methods.calculateTotal = function () {
   // Calculate seat total
   this.pricing.seatTotal = this.seats.reduce((total, seat) => total + seat.price, 0);
-  
+
   // Calculate snack total
   this.pricing.snackTotal = this.snacks.reduce((total, snack) => total + snack.totalPrice, 0);
-  
+
   // Calculate subtotal
   this.pricing.subtotal = this.pricing.seatTotal + this.pricing.snackTotal;
-  
+
   // Calculate taxes (simplified calculation)
   const taxRate = 0.18; // 18% GST
   this.pricing.taxes.cgst = Math.round((this.pricing.subtotal * taxRate) / 2);
   this.pricing.taxes.sgst = Math.round((this.pricing.subtotal * taxRate) / 2);
   this.pricing.taxes.serviceFee = Math.round(this.pricing.subtotal * 0.02); // 2% service fee
   this.pricing.taxes.convenienceFee = Math.round(this.pricing.subtotal * 0.01); // 1% convenience fee
-  
+
   // Calculate total amount
-  const totalTaxes = this.pricing.taxes.cgst + this.pricing.taxes.sgst + 
-                    this.pricing.taxes.serviceFee + this.pricing.taxes.convenienceFee;
-  
+  const totalTaxes = this.pricing.taxes.cgst + this.pricing.taxes.sgst +
+    this.pricing.taxes.serviceFee + this.pricing.taxes.convenienceFee;
+
   this.pricing.totalAmount = this.pricing.subtotal + totalTaxes - this.pricing.discount.amount;
-  
+
   // Set paid amount to total amount for offline bookings
   this.payment.paidAmount = this.pricing.totalAmount;
 };
 
 // Virtual for booking summary
-offlineBookingSchema.virtual('summary').get(function() {
+offlineBookingSchema.virtual('summary').get(function () {
   return {
     bookingId: this.bookingId,
     customerName: this.customer.name,
@@ -292,9 +292,9 @@ offlineBookingSchema.virtual('summary').get(function() {
 });
 
 // Index for better query performance
+// Note: bookingId index is already defined in schema with unique: true
 offlineBookingSchema.index({ theatreOwner: 1, bookingDate: -1 });
 offlineBookingSchema.index({ 'theatre.theatreId': 1, 'showtime.date': 1 });
-offlineBookingSchema.index({ bookingId: 1 });
 offlineBookingSchema.index({ 'customer.phone': 1 });
 
 module.exports = mongoose.model('OfflineBooking', offlineBookingSchema);

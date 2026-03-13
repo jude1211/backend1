@@ -218,18 +218,24 @@ app.use('*', (req, res) => {
 app.use(errorHandler);
 
 // MongoDB connection
-const connectDB = async () => {
+const connectDB = async (retries = 5) => {
   try {
-    const mongoURI = process.env.NODE_ENV === 'test' 
-      ? process.env.MONGODB_TEST_URI 
+    const mongoURI = process.env.NODE_ENV === 'test'
+      ? process.env.MONGODB_TEST_URI
       : (process.env.MONGODB_URI || process.env.MONGO_URI);
-    
+
     await mongoose.connect(mongoURI);
-    
+
     console.log(`MongoDB connected: ${mongoose.connection.host}`);
   } catch (error) {
     console.error('MongoDB connection error:', error);
-    process.exit(1);
+    if (retries > 0) {
+      console.log(`Retrying connection... (${retries} attempts left)`);
+      setTimeout(() => connectDB(retries - 1), 5000);
+    } else {
+      console.error('Failed to connect to MongoDB after multiple attempts.');
+      process.exit(1);
+    }
   }
 };
 
@@ -239,10 +245,10 @@ const PORT = process.env.PORT || 5000;
 const startServer = async () => {
   try {
     await connectDB();
-    
+
     // Create HTTP server
     const server = http.createServer(app);
-    
+
     // Initialize Socket.IO
     const io = new Server(server, {
       cors: {
@@ -254,12 +260,12 @@ const startServer = async () => {
         credentials: true
       }
     });
-    
+
 
     // Socket.IO connection handling
     io.on('connection', (socket) => {
       console.log(`🔌 Client connected: ${socket.id}`);
-      
+
       // Join room for specific screen/show
       socket.on('join-show', (data) => {
         const { screenId, bookingDate, showtime } = data;
@@ -283,7 +289,7 @@ const startServer = async () => {
 
     // Make io available globally
     app.set('io', io);
-    
+
     server.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📱 Environment: ${process.env.NODE_ENV}`);
@@ -310,30 +316,30 @@ const startServer = async () => {
 // Only start server if this file is run directly
 if (require.main === module) {
   startServer();
-  
+
   // Schedule cleanup job to run daily at 2 AM
   const scheduleCleanup = () => {
     const now = new Date();
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(2, 0, 0, 0); // 2:00 AM
-    
+
     const msUntilCleanup = tomorrow.getTime() - now.getTime();
-    
+
     setTimeout(() => {
       console.log('Running scheduled cleanup of past shows...');
       cleanupPastShows();
-      
+
       // Schedule next cleanup (24 hours later)
       setInterval(() => {
         console.log('Running scheduled cleanup of past shows...');
         cleanupPastShows();
       }, 24 * 60 * 60 * 1000); // 24 hours
     }, msUntilCleanup);
-    
+
     console.log(`Cleanup job scheduled to run at ${tomorrow.toISOString()}`);
   };
-  
+
   // Start cleanup scheduler
   scheduleCleanup();
 }

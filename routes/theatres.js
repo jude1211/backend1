@@ -88,7 +88,7 @@ router.get('/', [
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    
+
     const theatres = await theatreQuery
       .skip(skip)
       .limit(parseInt(limit))
@@ -138,7 +138,7 @@ router.get('/:theatreId', optionalAuth, async (req, res) => {
     }
 
     const theatreData = theatre.toObject();
-    
+
     // Add user-specific data if authenticated
     if (req.user) {
       theatreData.isFavorite = req.user.favoriteTheatres.includes(theatre._id);
@@ -201,7 +201,7 @@ router.get('/city/:city', optionalAuth, async (req, res) => {
 router.get('/chains/list', async (req, res) => {
   try {
     const chains = await Theatre.distinct('chain', { status: 'active' });
-    
+
     const chainStats = await Theatre.aggregate([
       { $match: { status: 'active' } },
       {
@@ -230,24 +230,154 @@ router.get('/chains/list', async (req, res) => {
   }
 });
 
+// Search Theatre Owners (Public)
+router.get('/owners/search', async (req, res) => {
+  try {
+    const { query } = req.query;
+
+    if (!query || query.length < 1) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const TheatreOwner = require('../models/TheatreOwner');
+
+    // Find theatre owners where theatreName starts with the query (case-insensitive)
+    const owners = await TheatreOwner.find({
+      theatreName: new RegExp(`^${query}`, 'i'),
+      isActive: true
+    })
+      .select('theatreName location _id email phone')
+      .limit(10);
+
+    res.json({
+      success: true,
+      data: owners
+    });
+  } catch (error) {
+    console.error('Search theatre owners error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to search theatres'
+    });
+  }
+});
+
+// Get public screens for a theatre owner
+router.get('/owners/:ownerId/screens/public', async (req, res) => {
+  try {
+    const { ownerId } = req.params;
+    const ScreenLayout = require('../models/ScreenLayout');
+
+    const screens = await ScreenLayout.find({ theatreId: ownerId })
+      .select('screenId screenName meta.rows meta.columns')
+      .sort({ screenId: 1 });
+
+    res.json({
+      success: true,
+      data: screens
+    });
+  } catch (error) {
+    console.error('Get public screens error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch screens'
+    });
+  }
+});
+
+// Get public running dates for a theatre owner
+router.get('/owners/:ownerId/dates/public', async (req, res) => {
+  try {
+    const { ownerId } = req.params;
+    const ScreenShow = require('../models/ScreenShow');
+
+    // Find all active shows for this theatre owner
+    const activeShows = await ScreenShow.find({
+      theatreOwnerId: ownerId,
+      status: 'Active'
+    }).select('runningDates showtimes');
+
+    const validDates = new Set();
+    const now = new Date();
+    now.setSeconds(0, 0); // Reset seconds/ms for cleaner comparison
+
+    // Helper to parse "HH:MM AM/PM" to Minutes from midnight
+    const parseTime = (timeStr) => {
+      try {
+        const [time, period] = timeStr.trim().split(' ');
+        let [hours, minutes] = time.split(':').map(Number);
+        if (period === 'PM' && hours !== 12) hours += 12;
+        if (period === 'AM' && hours === 12) hours = 0;
+        return hours * 60 + minutes;
+      } catch (e) {
+        return -1;
+      }
+    };
+
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    // Get today's date string in YYYY-MM-DD format (local time)
+    const todayStr = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0')
+    ].join('-');
+
+    activeShows.forEach(show => {
+      if (show.runningDates && Array.isArray(show.runningDates)) {
+        show.runningDates.forEach(dateStr => {
+          if (dateStr > todayStr) {
+            // Future dates are always valid
+            validDates.add(dateStr);
+          } else if (dateStr === todayStr) {
+            // For today, check if any showtime is in the future
+            if (show.showtimes && Array.isArray(show.showtimes)) {
+              const hasFutureShow = show.showtimes.some(time => {
+                const showMinutes = parseTime(time);
+                return showMinutes > currentMinutes;
+              });
+              if (hasFutureShow) {
+                validDates.add(dateStr);
+              }
+            }
+          }
+        });
+      }
+    });
+
+    const uniqueDates = [...validDates].sort();
+
+    res.json({
+      success: true,
+      data: uniqueDates
+    });
+  } catch (error) {
+    console.error('Get public dates error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch dates'
+    });
+  }
+});
+
 // Check if email already exists for theatre owner applications
 router.get('/owner-applications/check-email/:email', async (req, res) => {
   try {
     const { email } = req.params;
-    
+
     // Check in TheatreOwnerApplication collection
     const existingApplication = await TheatreOwnerApplication.findOne({ email: email.toLowerCase() });
-    
+
     // Also check in TheatreOwner collection (if approved applications)
     const TheatreOwner = require('../models/TheatreOwner');
     const existingOwner = await TheatreOwner.findOne({ email: email.toLowerCase() });
-    
+
     // Check in User collection (regular users)
     const User = require('../models/User');
     const existingUser = await User.findOne({ email: email.toLowerCase() });
-    
+
     const exists = !!(existingApplication || existingOwner || existingUser);
-    
+
     res.json({
       success: true,
       data: {
@@ -272,7 +402,7 @@ router.get('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res)
     const { ownerId } = req.params;
     const TheatreOwner = require('../models/TheatreOwner');
     const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
-    
+
     const owner = await TheatreOwner.findById(ownerId).lean();
     if (!owner) {
       return res.status(404).json({ success: false, error: 'Theatre owner not found' });
@@ -334,12 +464,12 @@ router.get('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res)
       }));
     }
 
-    res.json({ 
-      success: true, 
-      data: { 
-        screenCount: screens.length, 
-        screens 
-      } 
+    res.json({
+      success: true,
+      data: {
+        screenCount: screens.length,
+        screens
+      }
     });
   } catch (error) {
     console.error('Owner screens error:', error);
@@ -355,13 +485,13 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
     if (String(req.theatreOwner._id) !== String(ownerId)) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
-    
+
     const TheatreOwner = require('../models/TheatreOwner');
     const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
-    
+
     const owner = await TheatreOwner.findById(ownerId);
     if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
-    
+
     // Find the next available screen number
     let newScreenNumber = 1;
     if (owner.applicationId) {
@@ -387,11 +517,11 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
       newScreenNumber = Math.max(1, parseInt(owner.screenCount || 0)) + 1;
       console.log(`No application data - using screen count - new screen number: ${newScreenNumber}`);
     }
-    
+
     // Update screen count
     owner.screenCount = Math.max(owner.screenCount || 0, newScreenNumber);
     await owner.save();
-    
+
     // Also add the screen to the theatre owner application if it exists
     if (owner.applicationId) {
       try {
@@ -413,7 +543,7 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
               { label: 'Balcony', price: '320' }
             ]
           };
-          
+
           if (!application.screens) {
             application.screens = [];
           }
@@ -429,7 +559,7 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
     // Create screen layout in screenlayouts collection
     try {
       const ScreenLayout = require('../models/ScreenLayout');
-      
+
       // Try to get configuration from Screen 1, fallback to defaults if not found
       let screenConfig = {
         meta: {
@@ -464,11 +594,11 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
 
       // Try to copy configuration from Screen 1
       try {
-        const screen1Layout = await ScreenLayout.findOne({ 
+        const screen1Layout = await ScreenLayout.findOne({
           screenId: '1',
-          theatreId: owner._id 
+          theatreId: owner._id
         });
-        
+
         if (screen1Layout) {
           console.log(`Copying configuration from Screen 1 for new Screen ${newScreenNumber}`);
           screenConfig = {
@@ -477,8 +607,8 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
               columns: screen1Layout.meta?.columns || 12,
               aisles: screen1Layout.meta?.aisles || [5, 9]
             },
-            seatClasses: screen1Layout.seatClasses && screen1Layout.seatClasses.length > 0 
-              ? screen1Layout.seatClasses 
+            seatClasses: screen1Layout.seatClasses && screen1Layout.seatClasses.length > 0
+              ? screen1Layout.seatClasses
               : screenConfig.seatClasses
           };
         } else {
@@ -509,21 +639,21 @@ router.post('/owner/:ownerId/screens', authenticateTheatreOwner, async (req, res
       console.error('Failed to create screen layout:', layoutError);
       // Don't fail the entire operation for this
     }
-    
+
     const count = owner.screenCount;
     const screens = Array.from({ length: count }).map((_, idx) => ({
       screenNumber: idx + 1,
       name: name && idx + 1 === count ? name : `Screen ${idx + 1}`,
       type
     }));
-    
-    res.status(201).json({ 
-      success: true, 
-      data: { 
-        screenCount: count, 
+
+    res.status(201).json({
+      success: true,
+      data: {
+        screenCount: count,
         screens,
         screenNumber: newScreenNumber // Return the new screen number for frontend
-      } 
+      }
     });
   } catch (error) {
     console.error('Add owner screen error:', error);
@@ -541,7 +671,7 @@ router.post('/owner/:ownerId/sync-layouts', authenticateTheatreOwner, async (req
 
     const TheatreOwner = require('../models/TheatreOwner');
     const ScreenLayout = require('../models/ScreenLayout');
-    
+
     const owner = await TheatreOwner.findById(ownerId);
     if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
 
@@ -583,11 +713,11 @@ router.post('/owner/:ownerId/sync-layouts', authenticateTheatreOwner, async (req
 
     // Try to get configuration from Screen 1
     try {
-      const screen1Layout = await ScreenLayout.findOne({ 
+      const screen1Layout = await ScreenLayout.findOne({
         screenId: '1',
-        theatreId: owner._id 
+        theatreId: owner._id
       });
-      
+
       if (screen1Layout) {
         console.log('Using Screen 1 configuration as template for missing layouts');
         templateConfig = {
@@ -596,8 +726,8 @@ router.post('/owner/:ownerId/sync-layouts', authenticateTheatreOwner, async (req
             columns: screen1Layout.meta?.columns || 12,
             aisles: screen1Layout.meta?.aisles || [5, 9]
           },
-          seatClasses: screen1Layout.seatClasses && screen1Layout.seatClasses.length > 0 
-            ? screen1Layout.seatClasses 
+          seatClasses: screen1Layout.seatClasses && screen1Layout.seatClasses.length > 0
+            ? screen1Layout.seatClasses
             : templateConfig.seatClasses
         };
       }
@@ -607,9 +737,9 @@ router.post('/owner/:ownerId/sync-layouts', authenticateTheatreOwner, async (req
 
     // Check each screen and create missing layouts
     for (let screenNumber = 1; screenNumber <= screenCount; screenNumber++) {
-      const existingLayout = await ScreenLayout.findOne({ 
+      const existingLayout = await ScreenLayout.findOne({
         screenId: screenNumber.toString(),
-        theatreId: owner._id 
+        theatreId: owner._id
       });
 
       if (existingLayout) {
@@ -652,17 +782,17 @@ router.put('/owner/:ownerId/screens/:screenNumber', authenticateTheatreOwner, as
   try {
     const { ownerId, screenNumber } = req.params;
     const { rows, columns, aisleColumns, seatClasses, seatingCapacity } = req.body || {};
-    
+
     if (String(req.theatreOwner._id) !== String(ownerId)) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
-    
+
     const TheatreOwner = require('../models/TheatreOwner');
     const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
-    
+
     const owner = await TheatreOwner.findById(ownerId);
     if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
-    
+
     // Update screen configuration in the application
     if (owner.applicationId) {
       try {
@@ -676,15 +806,15 @@ router.put('/owner/:ownerId/screens/:screenNumber', authenticateTheatreOwner, as
             if (aisleColumns) application.screens[screenIndex].aisleColumns = aisleColumns;
             if (seatClasses) application.screens[screenIndex].seatClasses = seatClasses;
             if (seatingCapacity) application.screens[screenIndex].seatingCapacity = seatingCapacity;
-            
+
             await application.save();
-            
-            res.json({ 
-              success: true, 
-              data: { 
+
+            res.json({
+              success: true,
+              data: {
                 message: 'Screen configuration updated successfully',
                 screen: application.screens[screenIndex]
-              } 
+              }
             });
             return;
           }
@@ -694,7 +824,7 @@ router.put('/owner/:ownerId/screens/:screenNumber', authenticateTheatreOwner, as
         return res.status(500).json({ success: false, error: 'Failed to update screen configuration' });
       }
     }
-    
+
     res.status(404).json({ success: false, error: 'Screen not found or no application data' });
   } catch (error) {
     console.error('Update screen configuration error:', error);
@@ -706,28 +836,28 @@ router.put('/owner/:ownerId/screens/:screenNumber', authenticateTheatreOwner, as
 router.delete('/owner/:ownerId/screens/:screenId', authenticateTheatreOwner, async (req, res) => {
   try {
     const { ownerId, screenId } = req.params;
-    
+
     if (String(req.theatreOwner._id) !== String(ownerId)) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
-    
+
     const TheatreOwner = require('../models/TheatreOwner');
     const ScreenLayout = require('../models/ScreenLayout');
     const TheatreOwnerApplication = require('../models/TheatreOwnerApplication');
-    
+
     const owner = await TheatreOwner.findById(ownerId);
     if (!owner) return res.status(404).json({ success: false, error: 'Theatre owner not found' });
-    
+
     // Check if screen exists
     const screenNumber = parseInt(screenId);
     console.log(`Delete screen request - screenId: ${screenId}, screenNumber: ${screenNumber}, owner.screenCount: ${owner.screenCount}`);
     console.log(`Owner data:`, { _id: owner._id, screenCount: owner.screenCount, name: owner.name });
-    
+
     if (isNaN(screenNumber) || screenNumber < 1) {
       console.log(`Invalid screen number: ${screenNumber}`);
       return res.status(400).json({ success: false, error: 'Invalid screen ID' });
     }
-    
+
     // Check if screen exists in application data
     let screenExists = false;
     if (owner.applicationId) {
@@ -741,7 +871,7 @@ router.delete('/owner/:ownerId/screens/:screenId', authenticateTheatreOwner, asy
         console.warn('Failed to check screen in application:', appError);
       }
     }
-    
+
     // If no application data, check against screen count
     if (!owner.applicationId) {
       if (screenNumber > owner.screenCount) {
@@ -755,38 +885,38 @@ router.delete('/owner/:ownerId/screens/:screenId', authenticateTheatreOwner, asy
         return res.status(404).json({ success: false, error: 'Screen not found' });
       }
     }
-    
+
     console.log(`Screen validation passed - proceeding with deletion`);
-    
+
     // Delete screen layout from screenlayouts collection
     try {
-      await ScreenLayout.deleteOne({ 
+      await ScreenLayout.deleteOne({
         screenId: screenId,
-        theatreId: owner._id 
+        theatreId: owner._id
       });
       console.log(`Deleted screen layout for screen ${screenId}`);
     } catch (layoutError) {
       console.warn('Failed to delete screen layout:', layoutError);
       // Don't fail the entire operation for this
     }
-    
+
     // Delete all shows for this screen from screenshows collection
     try {
       const ScreenShow = require('../models/ScreenShow');
-      const showResult = await ScreenShow.deleteMany({ 
+      const showResult = await ScreenShow.deleteMany({
         screenId: screenId,
-        theatreOwnerId: owner._id 
+        theatreOwnerId: owner._id
       });
       console.log(`Deleted ${showResult.deletedCount} shows for screen ${screenId}`);
     } catch (showError) {
       console.warn('Failed to delete screen shows:', showError);
       // Don't fail the entire operation for this
     }
-    
+
     // Delete all offline bookings for this screen
     try {
       const OfflineBooking = require('../models/OfflineBooking');
-      const bookingResult = await OfflineBooking.deleteMany({ 
+      const bookingResult = await OfflineBooking.deleteMany({
         'theatre.theatreId': owner._id,
         'theatre.screen.screenNumber': screenNumber
       });
@@ -795,11 +925,11 @@ router.delete('/owner/:ownerId/screens/:screenId', authenticateTheatreOwner, asy
       console.warn('Failed to delete offline bookings:', bookingError);
       // Don't fail the entire operation for this
     }
-    
+
     // Delete all regular bookings for this screen
     try {
       const Booking = require('../models/Booking');
-      const regularBookingResult = await Booking.deleteMany({ 
+      const regularBookingResult = await Booking.deleteMany({
         'theatre.theatreId': owner._id,
         'theatre.screen.screenNumber': screenNumber
       });
@@ -808,7 +938,7 @@ router.delete('/owner/:ownerId/screens/:screenId', authenticateTheatreOwner, asy
       console.warn('Failed to delete regular bookings:', bookingError);
       // Don't fail the entire operation for this
     }
-    
+
     // Remove screen from application if it exists
     if (owner.applicationId) {
       try {
@@ -823,7 +953,7 @@ router.delete('/owner/:ownerId/screens/:screenId', authenticateTheatreOwner, asy
         // Don't fail the entire operation for this
       }
     }
-    
+
     // Update screen count to reflect actual number of screens
     if (owner.applicationId) {
       try {
@@ -841,9 +971,9 @@ router.delete('/owner/:ownerId/screens/:screenId', authenticateTheatreOwner, asy
       owner.screenCount = Math.max(0, owner.screenCount - 1);
     }
     await owner.save();
-    
+
     console.log(`Successfully deleted screen ${screenId} for owner ${ownerId}`);
-    
+
     res.json({
       success: true,
       data: {
@@ -906,7 +1036,7 @@ router.post(
       try {
         const cfgOk = UploadService.isConfigured && UploadService.isConfigured();
         console.log('🔧 Cloudinary configured:', cfgOk);
-      } catch {}
+      } catch { }
 
       // Pre-parse JSON fields sent as strings in multipart
       try {
@@ -923,12 +1053,12 @@ router.post(
         if (typeof sample.screens === 'string' && sample.screens.length > 200) sample.screens = sample.screens.substring(0, 200) + '…';
         console.log('🧪 Incoming owner application body keys:', Object.keys(req.body));
         console.log('🧪 Incoming owner application body sample:', sample);
-      } catch {}
+      } catch { }
 
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
         const details = errors.array().map(e => ({ field: e.path, msg: e.msg, value: e.value }));
-        try { console.table(details); } catch {}
+        try { console.table(details); } catch { }
         return res.status(400).json({
           success: false,
           error: 'Validation failed',
@@ -1064,7 +1194,7 @@ router.post(
 router.get('/cities/list', async (req, res) => {
   try {
     const cities = await Theatre.distinct('location.city', { status: 'active' });
-    
+
     const cityStats = await Theatre.aggregate([
       { $match: { status: 'active' } },
       {
@@ -1163,8 +1293,8 @@ router.get('/nearby/search', [
         }
       }
     })
-    .limit(parseInt(limit))
-    .select('name location chain ratings totalScreens totalCapacity');
+      .limit(parseInt(limit))
+      .select('name location chain ratings totalScreens totalCapacity');
 
     res.json({
       success: true,
