@@ -32,34 +32,45 @@ router.get('/:screenId/:bookingDate/:showtime', async (req, res) => {
     }
 
     // 2. Find all bookings for this show (by screen, date, and showtime)
+    // Decode showtime in case it's URL-encoded (e.g., "9%3A30%20PM" -> "9:30 PM")
+    const decodedShowtime = decodeURIComponent(showtime);
+    
     const bookings = await Booking.find({
-      'theatre.screen.screenNumber': Number(screenId),
+      $or: [
+        { 'theatre.screen.screenNumber': Number(screenId) },
+        { 'theatre.screen.screenNumber': screenId }
+      ],
       'showtime.date': new Date(bookingDate),
-      'showtime.time': showtime,
+      'showtime.time': decodedShowtime,
       status: 'confirmed'
     });
+    
+    console.log(`[seatLayout GET] screenId=${screenId}, date=${bookingDate}, showtime=${decodedShowtime}, bookings found=${bookings.length}`);
 
     // 3. Collect all booked seat numbers
     const bookedSeats = new Set();
     bookings.forEach(b => {
       (b.seats || []).forEach(seat => {
-        const seatNumber = seat.seatNumber || seat.number || seat.seat;
-        if (seatNumber) {
-          // Convert seat number format to match frontend expectations
-          if (seatNumber.match(/^[A-Z]\d+$/)) {
-            // Format: A1 -> A-1
-            const row = seatNumber.charAt(0);
-            const number = seatNumber.substring(1);
-            bookedSeats.add(`${row}-${number}`);
-          } else if (seat.row && seatNumber) {
-            // Use row and seatNumber separately
-            bookedSeats.add(`${seat.row}-${seatNumber}`);
-          } else {
+        let seatNumber = seat.seatNumber;
+        if (seatNumber && typeof seatNumber === 'string') {
+          // Normalize: A1 -> A-1, or if already A-1 keep it
+          if (seatNumber.includes('-')) {
             bookedSeats.add(seatNumber);
+          } else {
+            const match = seatNumber.match(/^([A-Z]+)(\d+)$/);
+            if (match) {
+              bookedSeats.add(`${match[1]}-${match[2]}`);
+            } else {
+              bookedSeats.add(seatNumber);
+            }
           }
+        } else if (seat.row && seat.number != null) {
+          bookedSeats.add(`${seat.row}-${seat.number}`);
         }
       });
     });
+    
+    console.log(`[seatLayout GET] bookedSeats:`, Array.from(bookedSeats));
 
     // 4. Mark each seat as available/booked
     const liveSeats = (layout.seats || []).map(seat => {
@@ -74,7 +85,8 @@ router.get('/:screenId/:bookingDate/:showtime', async (req, res) => {
       success: true,
       data: {
         ...layout.toObject(),
-        seats: liveSeats
+        seats: liveSeats,
+        reservedSeats: Array.from(bookedSeats)  // also expose as flat array for frontend
       }
     });
   } catch (error) {
@@ -139,10 +151,16 @@ router.get('/:screenId/:bookingDate/:showtime/live', async (req, res) => {
     if (layout.seats) {
       Object.keys(layout.seats).forEach(seatKey => {
         const seat = layout.seats[seatKey];
-        processedSeats[seatKey] = {
+        // Ensure seatKey is in Row-Number format if possible
+        let normalizedKey = seatKey;
+        if (seat.rowLabel && seat.number) {
+          normalizedKey = `${seat.rowLabel}-${seat.number}`;
+        }
+        
+        processedSeats[normalizedKey] = {
           ...seat,
-          isReserved: reservedSeats.has(seatKey),
-          status: reservedSeats.has(seatKey) ? 'reserved' : 'available'
+          isReserved: reservedSeats.has(normalizedKey),
+          status: reservedSeats.has(normalizedKey) ? 'reserved' : 'available'
         };
       });
     }
@@ -342,6 +360,7 @@ router.post(
       const seatsPayload = requestedSeats.map(s => ({
         seatNumber: `${s.rowLabel}${s.number}`,
         row: s.rowLabel,
+        number: Number(s.number),
         seatType: 'regular',
         price: Number(s.price)
       }));
@@ -414,7 +433,7 @@ router.post(
       if (io) {
         const roomName = `show-${screenId}-${bookingDate}-${decodedShowtime}`;
         const updatedSeats = seatsPayload.map(seat => ({
-          seatNumber: seat.seatNumber,
+          seatNumber: (seat.row && seat.number) ? `${seat.row}-${seat.number}` : (seat.seatNumber ? seat.seatNumber.replace(/^([A-Z])(\d+)$/, '$1-$2') : '??'),
           status: 'reserved',
           bookingId: bookingId
         }));

@@ -84,6 +84,7 @@ const bookingSchema = new mongoose.Schema({
       required: true
     },
     row: String,
+    number: Number,
     seatType: {
       type: String,
       enum: ['regular', 'premium', 'recliner', 'vip'],
