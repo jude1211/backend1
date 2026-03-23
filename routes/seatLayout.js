@@ -72,11 +72,59 @@ router.get('/:screenId/:bookingDate/:showtime', async (req, res) => {
     
     console.log(`[seatLayout GET] bookedSeats:`, Array.from(bookedSeats));
 
-    // 4. Mark each seat as available/booked
+    // 4. Calculate Dynamic Pricing Multiplier
+    const { getPricingDecision } = require('../services/dynamicPricingService');
+    
+    // Convert e.g., "2:00 PM" to 14
+    let showHour = 0;
+    const timeMatch = decodedShowtime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    if (timeMatch) {
+      let hours = parseInt(timeMatch[1], 10);
+      const ampm = timeMatch[3].toUpperCase();
+      if (ampm === 'PM' && hours < 12) hours += 12;
+      if (ampm === 'AM' && hours === 12) hours = 0;
+      showHour = hours;
+    }
+
+    const showDateObj = new Date(bookingDate);
+    // Combine date and time for ISO string
+    const showtimeISO = new Date(showDateObj.setHours(showHour, timeMatch ? parseInt(timeMatch[2], 10) : 0)).toISOString();
+    
+    const dayOfWeek = showDateObj.getDay();
+    const totalSeats = layout.seats ? layout.seats.length : 1;
+    const occupancyPct = bookedSeats.size / totalSeats;
+
+    let priceMultiplier = 1;
+    try {
+      // Use a dummy basePrice of 100 to figure out if there's a discount
+      const decision = await getPricingDecision({
+        basePrice: 100,
+        showtime: showtimeISO,
+        show_hour: showHour,
+        day_of_week: dayOfWeek,
+        seat_occupancy_pct: occupancyPct,
+        movie_popularity: 0.5, // placeholder
+        recent_bookings: 5 // placeholder
+      });
+      console.log(`[Dynamic Pricing] Decision:`, decision);
+      if (decision.discountApplied) {
+        priceMultiplier = 1 - (decision.discountPercent / 100);
+      }
+    } catch (err) {
+      console.error('[Dynamic Pricing] Failed to get decision:', err.message);
+    }
+
+    // 5. Mark each seat as available/booked, and apply pricing multiplier
     const liveSeats = (layout.seats || []).map(seat => {
       const seatKey = `${seat.rowLabel}-${seat.number}`;
+      const seatObj = seat.toObject();
+      if (seatObj.price && priceMultiplier < 1) {
+        seatObj.originalPrice = seatObj.price;
+        seatObj.price = parseFloat((seatObj.price * priceMultiplier).toFixed(2));
+        seatObj.isDiscounted = true;
+      }
       return {
-        ...seat.toObject(),
+        ...seatObj,
         liveStatus: bookedSeats.has(seatKey) ? 'booked' : 'available'
       };
     });

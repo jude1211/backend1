@@ -23,6 +23,7 @@ const movieRatingRoutes = require('./routes/movieRatings');
 const paymentRoutes = require('./routes/payments');
 const proxyRoutes = require('./routes/proxy');
 const analyticsRoutes = require('./routes/analytics');
+const pricingRoutes = require('./routes/pricing');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -195,6 +196,7 @@ app.use(`/api/${apiVersion}/proxy`, proxyRoutes);
 app.use(`/proxy`, proxyRoutes);
 app.use(`/api/${apiVersion}/analytics`, analyticsRoutes);
 app.use(`/api/${apiVersion}/admin`, adminRoutes);
+app.use(`/api/${apiVersion}/pricing`, pricingRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
