@@ -54,7 +54,7 @@ async function getDemandScore(features) {
 /**
  * Full pricing decision: calls ML, applies sliding discount, returns result object.
  *
- * Dynamic pricing applies at ALL times (no 60-min window restriction).
+ * Dynamic pricing applies only for shows within a 60-min window constraint.
  * If ML is unavailable, base price is returned with reason 'ml_error'.
  *
  * @param {object} params
@@ -132,6 +132,18 @@ async function getPricingDecision({
  * Accepts (basePrice, showtimeDate, totalSeats, bookedSeats, moviePopularity).
  */
 async function getDynamicPrice(basePrice, showtimeDate, totalSeats, bookedSeats, moviePopularity = 5) {
+  const diffMins = (showtimeDate.getTime() - new Date().getTime()) / (1000 * 60);
+
+  if (diffMins > 60 || diffMins < 0) {
+    return {
+      price: basePrice,
+      originalPrice: basePrice,
+      discountApplied: false,
+      discountPercent: 0,
+      reason: 'outside_time_window',
+    };
+  }
+
   const occupancyPct = totalSeats > 0 ? bookedSeats / totalSeats : 0;
   const showHour     = showtimeDate instanceof Date ? showtimeDate.getHours()  : 12;
   const dayOfWeek    = showtimeDate instanceof Date ? showtimeDate.getDay()    : 0;
