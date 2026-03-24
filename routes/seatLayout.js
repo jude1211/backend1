@@ -9,6 +9,43 @@ const { authenticateUser } = require('../middleware/auth');
 const emailService = require('../services/emailService');
 
 const router = express.Router();
+const { getDynamicPrice } = require('../services/dynamicPricingService');
+
+router.get('/test-pricing/:screenId/:bookingDate/:showtime', async (req, res) => {
+  try {
+    const { screenId, bookingDate, showtime } = req.params;
+    const decodedShowtime = decodeURIComponent(showtime);
+    const showHourMatch = decodedShowtime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    let showHour = 0;
+    if (showHourMatch) {
+      showHour = parseInt(showHourMatch[1], 10);
+      const ampm = showHourMatch[3].toUpperCase();
+      if (ampm === 'PM' && showHour < 12) showHour += 12;
+      if (ampm === 'AM' && showHour === 12) showHour = 0;
+    }
+    const showDateObj = new Date(bookingDate);
+    const showtimeDate = new Date(showDateObj.setHours(showHour, showHourMatch ? parseInt(showHourMatch[2], 10) : 0));
+    const now = new Date();
+    const minutesUntilShow = (showtimeDate - now) / (1000 * 60);
+
+    const result = await getDynamicPrice(
+      250,           // test with ₹250 base price
+      showtimeDate,
+      100,           // total seats
+      0,             // booked seats
+      5              // movie popularity
+    );
+
+    res.json({
+      now:              now.toISOString(),
+      showtimeDate:     showtimeDate.toISOString(),
+      minutesUntilShow: minutesUntilShow.toFixed(1),
+      pricingResult:    result,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // GET /api/seat-layout/:screenId/:bookingDate/:showtime
 // Returns seat layout for a show with live availability
@@ -73,8 +110,6 @@ router.get('/:screenId/:bookingDate/:showtime', async (req, res) => {
     console.log(`[seatLayout GET] bookedSeats:`, Array.from(bookedSeats));
 
     // 4. Calculate Dynamic Pricing Multiplier
-    const { getPricingDecision } = require('../services/dynamicPricingService');
-    
     // Convert e.g., "2:00 PM" to 14
     let showHour = 0;
     const timeMatch = decodedShowtime.match(/(\d+):(\d+)\s*(AM|PM)/i);
@@ -87,28 +122,29 @@ router.get('/:screenId/:bookingDate/:showtime', async (req, res) => {
     }
 
     const showDateObj = new Date(bookingDate);
-    // Combine date and time for ISO string
-    const showtimeISO = new Date(showDateObj.setHours(showHour, timeMatch ? parseInt(timeMatch[2], 10) : 0)).toISOString();
-    
-    const dayOfWeek = showDateObj.getDay();
+    const showtimeDate = new Date(
+      showDateObj.getFullYear(),
+      showDateObj.getMonth(),
+      showDateObj.getDate(),
+      showHour,
+      timeMatch ? parseInt(timeMatch[2], 10) : 0
+    );
+
     const totalSeats = layout.seats ? layout.seats.length : 1;
-    const occupancyPct = bookedSeats.size / totalSeats;
 
     let priceMultiplier = 1;
+    let pricingDecision = null;
     try {
-      // Use a dummy basePrice of 100 to figure out if there's a discount
-      const decision = await getPricingDecision({
-        basePrice: 100,
-        showtime: showtimeISO,
-        show_hour: showHour,
-        day_of_week: dayOfWeek,
-        seat_occupancy_pct: occupancyPct,
-        movie_popularity: 0.5, // placeholder
-        recent_bookings: 5 // placeholder
-      });
-      console.log(`[Dynamic Pricing] Decision:`, decision);
-      if (decision.discountApplied) {
-        priceMultiplier = 1 - (decision.discountPercent / 100);
+      pricingDecision = await getDynamicPrice(
+        100,          // dummy base price to get multiplier
+        showtimeDate,
+        totalSeats,
+        bookedSeats.size,
+        0.5           // placeholder movie popularity (0-1 scale)
+      );
+      console.log(`[Dynamic Pricing] Decision:`, pricingDecision);
+      if (pricingDecision.discountApplied) {
+        priceMultiplier = 1 - (pricingDecision.discountPercent / 100);
       }
     } catch (err) {
       console.error('[Dynamic Pricing] Failed to get decision:', err.message);
@@ -194,6 +230,40 @@ router.get('/:screenId/:bookingDate/:showtime/live', async (req, res) => {
       }
     });
 
+    const totalSeatsCount = Object.keys(layout.seats || {}).length;
+    const bookedSeatsCount = reservedSeats.size;
+
+    // -- ML Dynamic Pricing --
+    const decodedShowtime = decodeURIComponent(showtime);
+    const showHourMatch = decodedShowtime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    let showHour = 0;
+    if (showHourMatch) {
+      showHour = parseInt(showHourMatch[1], 10);
+      const ampm = showHourMatch[3].toUpperCase();
+      if (ampm === 'PM' && showHour < 12) showHour += 12;
+      if (ampm === 'AM' && showHour === 12) showHour = 0;
+    }
+    const showDateObj = new Date(bookingDate);
+    const showtimeDate = new Date(showDateObj.setHours(showHour, showHourMatch ? parseInt(showHourMatch[2], 10) : 0));
+    
+    let priceMultiplier = 1;
+    let pricingResult = null;
+    try {
+      pricingResult = await getDynamicPrice(
+        100, // dummy base price
+        showtimeDate,
+        totalSeatsCount,
+        bookedSeatsCount,
+        0.5 // placeholder movie popularity (0-1 scale)
+      );
+      if (pricingResult && pricingResult.discountApplied) {
+        // Use actual ML-derived discount, not a hardcoded value
+        priceMultiplier = 1 - (pricingResult.discountPercent / 100);
+      }
+    } catch (err) {
+      console.error('[DynamicPricing] Error calling ML service in /live route:', err.message);
+    }
+
     // 4. Process the layout to mark seats as reserved
     const processedSeats = {};
     if (layout.seats) {
@@ -205,10 +275,25 @@ router.get('/:screenId/:bookingDate/:showtime/live', async (req, res) => {
           normalizedKey = `${seat.rowLabel}-${seat.number}`;
         }
         
+        const isReserved = reservedSeats.has(normalizedKey);
+        
+        let seatPrice = seat.price || 250;
+        let originalPrice = undefined;
+        let isDiscounted = false;
+
+        if (priceMultiplier < 1) {
+          originalPrice = seatPrice;
+          seatPrice = parseFloat((seatPrice * priceMultiplier).toFixed(2));
+          isDiscounted = true;
+        }
+
         processedSeats[normalizedKey] = {
           ...seat,
-          isReserved: reservedSeats.has(normalizedKey),
-          status: reservedSeats.has(normalizedKey) ? 'reserved' : 'available'
+          isReserved: isReserved,
+          status: isReserved ? 'reserved' : 'available',
+          price: seatPrice,
+          originalPrice: originalPrice,
+          isDiscounted: isDiscounted
         };
       });
     }
@@ -221,8 +306,9 @@ router.get('/:screenId/:bookingDate/:showtime/live', async (req, res) => {
         config: layout.config,
         seats: processedSeats,
         reservedSeats: Array.from(reservedSeats),
-        totalSeats: Object.keys(layout.seats || {}).length,
-        availableSeats: Object.keys(layout.seats || {}).length - reservedSeats.size,
+        totalSeats: totalSeatsCount,
+        availableSeats: totalSeatsCount - bookedSeatsCount,
+        dynamicPricing: pricingResult,
         lastUpdated: new Date().toISOString()
       }
     });

@@ -1,216 +1,152 @@
-/**
- * dynamicPricingService.js
- * ─────────────────────────────────────────────────────────────────────────────
- * Integrates with the Python XGBoost ML microservice to get a demand score,
- * then applies a discount-only pricing rule for cinema ticket pricing.
- *
- * Pricing Rule:
- *   ∙ demand_score < 0.4  AND  showtime is within 60 min  →  20% DISCOUNT
- *   ∙ Anything else                                        →  BASE PRICE kept
- *
- * NO PRICE INCREASES are ever applied.
- * ─────────────────────────────────────────────────────────────────────────────
- */
+const axios = require('axios');
 
-const https = require('https');
-const http  = require('http');
-
-// ML microservice URL (runs locally on port 8085)
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8085';
-const ML_TIMEOUT_MS  = parseInt(process.env.ML_TIMEOUT_MS) || 5000;
-
-// Discount configuration
-const DISCOUNT_RATE            = 0.20;  // 20 %
-const LOW_DEMAND_THRESHOLD     = 0.40;  // demand_score below this → "low"
-const NEAR_SHOWTIME_MINUTES    = 60;    // showtime within N minutes
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
+const ML_TIMEOUT_MS  = 5000;
 
 /**
- * Make a POST request to the ML service.
- * Returns the parsed JSON body (demand_score, demand_level).
+ * Sliding-scale discount based on predicted demand score (0–1).
+ *
+ *  score < 0.20  →  30% off   (very low demand)
+ *  score < 0.40  →  20% off   (low demand)
+ *  score < 0.60  →  10% off   (moderate demand)
+ *  score ≥ 0.60  →   0% off   (high demand – base price maintained)
  */
-function callMLService(features) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify(features);
-    const url  = new URL('/predict-demand', ML_SERVICE_URL);
+function getDiscountPercent(demandScore) {
+  if (demandScore < 0.20) return 30;
+  if (demandScore < 0.40) return 20;
+  if (demandScore < 0.60) return 10;
+  return 0;
+}
 
-    const options = {
-      hostname : url.hostname,
-      port     : url.port || (url.protocol === 'https:' ? 443 : 80),
-      path     : url.pathname,
-      method   : 'POST',
-      headers  : {
-        'Content-Type'   : 'application/json',
-        'Content-Length' : Buffer.byteLength(body),
-      },
+/**
+ * Classify demand score into a human-readable label.
+ */
+function demandLabel(score) {
+  if (score < 0.40) return 'LOW';
+  if (score < 0.60) return 'MEDIUM';
+  return 'HIGH';
+}
+
+/**
+ * Call the ML service and return the raw demand score.
+ * @param {{ show_hour, day_of_week, seat_occupancy_pct, movie_popularity, recent_bookings }} features
+ * @returns {Promise<number>} demand score 0–1
+ */
+async function getDemandScore(features) {
+  const response = await axios.post(
+    `${ML_SERVICE_URL}/predict-demand`,
+    {
+      show_hour:          features.show_hour,
+      day_of_week:        features.day_of_week,
+      seat_occupancy_pct: features.seat_occupancy_pct,
+      movie_popularity:   features.movie_popularity,
+      recent_bookings:    features.recent_bookings ?? 0,
+    },
+    { timeout: ML_TIMEOUT_MS }
+  );
+  const score = response.data?.demand_score ?? response.data?.score ?? null;
+  if (score === null || score === undefined) {
+    throw new Error('ML service returned no demand score');
+  }
+  return parseFloat(score);
+}
+
+/**
+ * Full pricing decision: calls ML, applies sliding discount, returns result object.
+ *
+ * Dynamic pricing applies at ALL times (no 60-min window restriction).
+ * If ML is unavailable, base price is returned with reason 'ml_error'.
+ *
+ * @param {object} params
+ * @param {number} params.basePrice           - Original seat price (₹)
+ * @param {number} params.show_hour           - Hour of show (0-23)
+ * @param {number} params.day_of_week         - 0=Monday … 6=Sunday
+ * @param {number} params.seat_occupancy_pct  - Fraction already booked (0–1)
+ * @param {number} params.movie_popularity    - Normalised popularity (0–1)
+ * @param {number} [params.recent_bookings]   - Bookings in last 60 min
+ * @returns {Promise<object>} pricing decision
+ */
+async function getPricingDecision({
+  basePrice,
+  show_hour,
+  day_of_week,
+  seat_occupancy_pct,
+  movie_popularity,
+  recent_bookings = 0,
+}) {
+  try {
+    const features = {
+      show_hour:          show_hour,
+      day_of_week:        day_of_week,
+      seat_occupancy_pct: parseFloat(seat_occupancy_pct),
+      movie_popularity:   parseFloat(movie_popularity),
+      recent_bookings:    parseInt(recent_bookings, 10),
     };
 
-    const lib     = url.protocol === 'https:' ? https : http;
-    const timeout = setTimeout(() => {
-      req.destroy(new Error('ML service request timed out'));
-    }, ML_TIMEOUT_MS);
+    console.log('[DynamicPricing] Sending features to ML:', features);
+    const demandScore = await getDemandScore(features);
+    console.log(`[DynamicPricing] Demand score: ${demandScore}`);
 
-    const req = lib.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        clearTimeout(timeout);
-        try {
-          const parsed = JSON.parse(data);
-          if (res.statusCode !== 200) {
-            reject(new Error(`ML service HTTP ${res.statusCode}: ${data}`));
-          } else {
-            resolve(parsed);
-          }
-        } catch (err) {
-          reject(new Error(`ML service parse error: ${err.message}`));
-        }
-      });
-    });
+    const discountPercent = getDiscountPercent(demandScore);
+    const level           = demandLabel(demandScore);
 
-    req.on('error', (err) => { clearTimeout(timeout); reject(err); });
-    req.write(body);
-    req.end();
+    if (discountPercent > 0) {
+      const discountedPrice = Math.round(basePrice * (1 - discountPercent / 100));
+      console.log(`[DynamicPricing] demand=${demandScore} (${level}) → ${discountPercent}% off: ₹${basePrice} → ₹${discountedPrice}`);
+      return {
+        price:           discountedPrice,
+        originalPrice:   basePrice,
+        discountApplied: true,
+        discountPercent,
+        demandScore,
+        demandLevel:     level,
+        reason:          'dynamic_demand',
+      };
+    }
+
+    console.log(`[DynamicPricing] High demand (${demandScore}), base price applies`);
+    return {
+      price:           basePrice,
+      originalPrice:   basePrice,
+      discountApplied: false,
+      discountPercent: 0,
+      demandScore,
+      demandLevel:     level,
+      reason:          'high_demand',
+    };
+
+  } catch (err) {
+    console.error('[DynamicPricing] ML service error, falling back to base price:', err.message);
+    return {
+      price:           basePrice,
+      originalPrice:   basePrice,
+      discountApplied: false,
+      discountPercent: 0,
+      reason:          'ml_error',
+    };
+  }
+}
+
+/**
+ * Legacy wrapper kept for backward compatibility with seatLayout.js /live route.
+ * Accepts (basePrice, showtimeDate, totalSeats, bookedSeats, moviePopularity).
+ */
+async function getDynamicPrice(basePrice, showtimeDate, totalSeats, bookedSeats, moviePopularity = 5) {
+  const occupancyPct = totalSeats > 0 ? bookedSeats / totalSeats : 0;
+  const showHour     = showtimeDate instanceof Date ? showtimeDate.getHours()  : 12;
+  const dayOfWeek    = showtimeDate instanceof Date ? showtimeDate.getDay()    : 0;
+
+  // Normalise moviePopularity: if given as 0-10 scale, convert to 0-1
+  const normalizedPopularity = moviePopularity > 1 ? moviePopularity / 10 : moviePopularity;
+
+  return getPricingDecision({
+    basePrice,
+    show_hour:          showHour,
+    day_of_week:        dayOfWeek,
+    seat_occupancy_pct: parseFloat(occupancyPct.toFixed(4)),
+    movie_popularity:   parseFloat(normalizedPopularity.toFixed(4)),
+    recent_bookings:    bookedSeats,
   });
 }
 
-/**
- * Returns true if the showtime is within NEAR_SHOWTIME_MINUTES from now.
- * @param {string|Date} showtimeISO – ISO 8601 string or Date object
- */
-function isWithinOneHour(showtimeISO) {
-  const now            = Date.now();
-  const showMs         = new Date(showtimeISO).getTime();
-  const diffMinutes    = (showMs - now) / (1000 * 60);
-  return diffMinutes >= 0 && diffMinutes <= NEAR_SHOWTIME_MINUTES;
-}
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
-/**
- * Calls the ML microservice and returns the demand prediction.
- *
- * @param {Object} features
- * @param {number} features.show_hour          – Hour of day (0-23)
- * @param {number} features.day_of_week        – 0=Mon … 6=Sun
- * @param {number} features.seat_occupancy_pct – Fraction booked (0-1)
- * @param {number} features.movie_popularity   – Normalised score (0-1)
- * @param {number} features.recent_bookings    – Bookings in last 60 min
- *
- * @returns {Promise<{ demand_score: number, demand_level: string }>}
- */
-async function getDemandScore(features) {
-  return callMLService(features);
-}
-
-/**
- * Applies the pricing rule and returns the final ticket price.
- *
- * Rule (DISCOUNT-ONLY – prices never increase):
- *   demand_score < LOW_DEMAND_THRESHOLD  AND  showtime within 60 min
- *     → apply DISCOUNT_RATE
- *   otherwise
- *     → keep base price
- *
- * @param {number} basePrice    – Original ticket price (e.g., 200)
- * @param {number} demandScore  – Predicted demand (0-1)
- * @param {string|Date} showtimeISO – ISO showtime string
- *
- * @returns {{ finalPrice: number, discountApplied: boolean, discountPercent: number }}
- */
-function calculateFinalPrice(basePrice, demandScore, showtimeISO) {
-  const isLowDemand = demandScore < LOW_DEMAND_THRESHOLD;
-  const isNearShow  = isWithinOneHour(showtimeISO);
-
-  if (isLowDemand && isNearShow) {
-    const finalPrice = parseFloat((basePrice * (1 - DISCOUNT_RATE)).toFixed(2));
-    return {
-      finalPrice,
-      discountApplied : true,
-      discountPercent : DISCOUNT_RATE * 100,
-    };
-  }
-
-  return {
-    finalPrice      : parseFloat(basePrice.toFixed(2)),
-    discountApplied : false,
-    discountPercent : 0,
-  };
-}
-
-/**
- * High-level convenience function: predict demand + compute final price.
- * Falls back to base price if the ML service is unavailable.
- *
- * @param {Object} params
- * @param {number} params.basePrice
- * @param {string|Date} params.showtime       – ISO showtime
- * @param {number} params.show_hour
- * @param {number} params.day_of_week
- * @param {number} params.seat_occupancy_pct
- * @param {number} params.movie_popularity
- * @param {number} params.recent_bookings
- *
- * @returns {Promise<Object>}
- */
-async function getPricingDecision(params) {
-  const {
-    basePrice,
-    showtime,
-    show_hour,
-    day_of_week,
-    seat_occupancy_pct,
-    movie_popularity,
-    recent_bookings,
-  } = params;
-
-  let demandScore  = null;
-  let demandLevel  = 'UNKNOWN';
-  let mlError      = null;
-
-  try {
-    const result = await getDemandScore({
-      show_hour,
-      day_of_week,
-      seat_occupancy_pct,
-      movie_popularity,
-      recent_bookings,
-    });
-    demandScore = result.demand_score;
-    demandLevel = result.demand_level;
-  } catch (err) {
-    mlError = err.message;
-    console.warn(`⚠️  ML service unavailable – falling back to base price. Reason: ${err.message}`);
-  }
-
-  // If ML call failed → return base price (graceful degradation)
-  if (demandScore === null) {
-    return {
-      basePrice,
-      finalPrice      : basePrice,
-      demandScore     : null,
-      demandLevel     : 'UNKNOWN',
-      discountApplied : false,
-      discountPercent : 0,
-      mlServiceStatus : 'unavailable',
-      mlError,
-    };
-  }
-
-  const pricing = calculateFinalPrice(basePrice, demandScore, showtime);
-
-  return {
-    basePrice,
-    ...pricing,
-    demandScore,
-    demandLevel,
-    mlServiceStatus: 'ok',
-  };
-}
-
-module.exports = {
-  getDemandScore,
-  calculateFinalPrice,
-  getPricingDecision,
-};
+module.exports = { getDynamicPrice, getPricingDecision, getDemandScore };

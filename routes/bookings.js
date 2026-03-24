@@ -5,10 +5,22 @@ const Booking = require('../models/Booking');
 const User = require('../models/User');
 const Theatre = require('../models/Theatre');
 const TheatreOwner = require('../models/TheatreOwner');
+const Snack = require('../models/Snack');
 const { authenticateUser, requireOwnership } = require('../middleware/auth');
 const emailService = require('../services/emailService');
 
 const router = express.Router();
+
+// Helper function for rollback
+async function rollbackReservations(items) {
+  for (const item of items) {
+    if (item.snackId) {
+      await Snack.findByIdAndUpdate(item.snackId, {
+        $inc: { reservedStock: -item.quantity }
+      });
+    }
+  }
+}
  
 // Create new booking
 router.post('/', authenticateUser, [
@@ -34,8 +46,39 @@ router.post('/', authenticateUser, [
       });
     }
 
+    const { snackOrder = [], deliveryTime, snackTotal = 0 } = req.body;
+    let completedItems = [];
+
+    if (snackOrder && snackOrder.length > 0) {
+      for (const item of snackOrder) {
+        const snack = await Snack.findById(item.snackId);
+
+        if (!snack || !snack.isActive) {
+          await rollbackReservations(completedItems);
+          return res.status(404).json({ success: false, error: `Snack '${item.name}' not found` });
+        }
+
+        const available = Math.max(0, snack.stock - snack.reservedStock);
+        if (available < item.quantity) {
+          await rollbackReservations(completedItems);
+          return res.status(400).json({
+            success: false,
+            error: `Only ${available} units of '${snack.name}' left. Please update your order.`
+          });
+        }
+
+        await Snack.findByIdAndUpdate(item.snackId, {
+          $inc: { reservedStock: item.quantity }
+        });
+
+        completedItems.push({ snackId: item.snackId, quantity: item.quantity });
+      }
+    }
+
     const bookingData = {
       ...req.body,
+      status: 'pending',
+      reservationExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
       user: req.user._id,
       firebaseUid: req.user.firebaseUid
     };

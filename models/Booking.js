@@ -126,6 +126,18 @@ const bookingSchema = new mongoose.Schema({
       enum: ['small', 'medium', 'large', 'extra-large']
     }
   }],
+
+  // Snack Order Details (New Pre-Order Flow)
+  snackOrder: [{
+    snackId: { type: mongoose.Schema.Types.ObjectId, ref: 'Snack' },
+    name: String,
+    quantity: Number,
+    priceAtBooking: Number
+  }],
+  deliveryTime: {
+    type: String,
+    default: ''
+  },
   
   // Pricing Information
   pricing: {
@@ -289,6 +301,12 @@ const bookingSchema = new mongoose.Schema({
     userAgent: String,
     ipAddress: String,
     referrer: String
+  },
+
+  // Soft Reservation TTL
+  reservationExpiresAt: {
+    type: Date,
+    default: () => new Date(Date.now() + 10 * 60 * 1000) // 10 minutes from now
   }
 }, {
   timestamps: true,
@@ -300,6 +318,12 @@ const bookingSchema = new mongoose.Schema({
 bookingSchema.index({ user: 1, createdAt: -1 });
 bookingSchema.index({ firebaseUid: 1, createdAt: -1 });
 bookingSchema.index({ 'payment.status': 1 });
+
+// TTL index for soft reservations
+bookingSchema.index(
+  { reservationExpiresAt: 1 },
+  { expireAfterSeconds: 0, partialFilterExpression: { status: 'pending' } }
+);
 
 // Virtual for total seats
 bookingSchema.virtual('totalSeats').get(function() {

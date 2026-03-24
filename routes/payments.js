@@ -113,6 +113,22 @@ router.post(
       booking.payment.transactionId = razorpay_order_id;
       booking.payment.paidAt = new Date();
 
+      // Implement CONFIRM — move reservedStock to actual deducted stock
+      const Snack = require('../models/Snack');
+      if (booking.snackOrder && booking.snackOrder.length > 0) {
+        for (const item of booking.snackOrder) {
+          if (item.snackId) {
+            await Snack.findByIdAndUpdate(item.snackId, {
+              $inc: { stock: -item.quantity, reservedStock: -item.quantity }
+            });
+          }
+        }
+      }
+
+      // Mark the booking strictly as confirmed and remove expiration TTL
+      booking.status = 'confirmed';
+      booking.reservationExpiresAt = undefined;
+
       // Ensure booking status remains confirmed and QR/tickets available
       if (!booking.tickets || booking.tickets.length === 0) {
         booking.tickets = (booking.seats || []).map((seat, index) => ({

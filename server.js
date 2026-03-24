@@ -24,6 +24,7 @@ const paymentRoutes = require('./routes/payments');
 const proxyRoutes = require('./routes/proxy');
 const analyticsRoutes = require('./routes/analytics');
 const pricingRoutes = require('./routes/pricing');
+const snackRoutes = require('./routes/snacks');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -31,6 +32,7 @@ const { initializeFirebase } = require('./config/firebase');
 
 // Import cleanup script
 const { cleanupPastShows } = require('./scripts/cleanupPastShows');
+const releaseExpiredReservations = require('./jobs/releaseExpiredReservations');
 
 const app = express();
 
@@ -197,6 +199,7 @@ app.use(`/proxy`, proxyRoutes);
 app.use(`/api/${apiVersion}/analytics`, analyticsRoutes);
 app.use(`/api/${apiVersion}/admin`, adminRoutes);
 app.use(`/api/${apiVersion}/pricing`, pricingRoutes);
+app.use(`/api/${apiVersion}/snacks`, snackRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -298,6 +301,11 @@ const startServer = async () => {
       console.log(`🔗 API Base URL: http://localhost:${PORT}/api/${apiVersion}`);
       console.log(`💾 MongoDB: ${process.env.MONGODB_URI}`);
       console.log(`🔌 Socket.IO server initialized`);
+
+      const axios = require('axios');
+      axios.get('http://127.0.0.1:8085/health')
+        .then(() => console.log('[ML] ✓ ML pricing service is reachable'))
+        .catch(() => console.error('[ML] ✗ ML pricing service is NOT running on port 8085'));
     });
 
     // Graceful shutdown
@@ -344,6 +352,10 @@ if (require.main === module) {
 
   // Start cleanup scheduler
   scheduleCleanup();
+
+  // Start soft reservation sweep
+  setInterval(releaseExpiredReservations, 5 * 60 * 1000);
+  releaseExpiredReservations(); // Run once on startup
 }
 
 module.exports = app;

@@ -116,7 +116,7 @@ router.post('/ticket-price', pricingValidators, async (req, res) => {
     return res.status(200).json({
       success: true,
       ...decision,
-      rule: 'demand < 0.4 AND showtime within 60 min → 20% discount applied; price never increases',
+      rule: 'sliding discount: score<0.20→30% | score<0.40→20% | score<0.60→10% | score≥0.60→base price (no window restriction)',
     });
   } catch (error) {
     console.error('❌ Pricing endpoint error:', error);
