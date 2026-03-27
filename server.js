@@ -25,6 +25,7 @@ const proxyRoutes = require('./routes/proxy');
 const analyticsRoutes = require('./routes/analytics');
 const pricingRoutes = require('./routes/pricing');
 const snackRoutes = require('./routes/snacks');
+const specialMomentsRoutes = require('./routes/specialMoments');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -200,6 +201,7 @@ app.use(`/api/${apiVersion}/analytics`, analyticsRoutes);
 app.use(`/api/${apiVersion}/admin`, adminRoutes);
 app.use(`/api/${apiVersion}/pricing`, pricingRoutes);
 app.use(`/api/${apiVersion}/snacks`, snackRoutes);
+app.use(`/api/${apiVersion}/special-moments`, specialMomentsRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
